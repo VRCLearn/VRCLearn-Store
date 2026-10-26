@@ -1,0 +1,4 @@
+BETTER_AUTH_SECRET=local-test-only-change-this-to-a-unique-random-secret
+TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+ORIGIN=http://localhost:8788
+ENVIRONMENT=development
