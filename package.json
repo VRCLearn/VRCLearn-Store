@@ -1,0 +1,43 @@
+{
+    "name": "vrclearn-store",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "generate:theme": "node scripts/generate-theme.mjs",
+        "dev": "npm run generate:theme && vite --host 127.0.0.1",
+        "build": "npm run generate:theme && npm run check && vite build && node scripts/build-static.mjs",
+        "check": "tsc --noEmit && tsc --noEmit -p tsconfig.edge.json",
+        "test": "vitest run",
+        "test:browser": "playwright test",
+        "types": "wrangler types --env-interface PagesBindings --include-runtime=false --strict-vars=false pages-env.d.ts && wrangler types --config worker/wrangler.jsonc --env-interface SupportBindings --include-runtime=false --strict-vars=false worker-env.d.ts",
+        "preview": "vite preview --host 127.0.0.1 --port 4173",
+        "preflight": "node scripts/preflight.mjs",
+        "dev:pages": "wrangler pages dev dist",
+        "dev:worker": "wrangler dev --config worker/wrangler.jsonc",
+        "test:capacity": "vitest run tests/capacity.test.ts"
+    },
+    "dependencies": {
+        "@material-symbols/svg-500": "0.45.8",
+        "@material/material-color-utilities": "0.4.0",
+        "@material/web": "2.5.0",
+        "better-auth": "1.7.13",
+        "marked": "^17.0.0",
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0",
+        "react-router": "^7.9.0",
+        "zod": "^4.1.0"
+    },
+    "devDependencies": {
+        "@cloudflare/workers-types": "latest",
+        "@playwright/test": "latest",
+        "@types/node": "^24.0.0",
+        "@types/react": "^19.2.0",
+        "@types/react-dom": "^19.2.0",
+        "@vitejs/plugin-react": "latest",
+        "typescript": "latest",
+        "vite": "latest",
+        "vitest": "latest",
+        "wrangler": "latest"
+    }
+}

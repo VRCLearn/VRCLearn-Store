@@ -1,0 +1,8 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "lib": ["ES2023"],
+        "types": ["node", "@cloudflare/workers-types"]
+    },
+    "include": ["server", "shared", "worker", "functions", "edge", "tests/*.test.ts", "vitest.config.ts", "pages-env.d.ts", "worker-env.d.ts"]
+}
