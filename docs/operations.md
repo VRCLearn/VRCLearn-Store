@@ -23,7 +23,9 @@
 
 Pages secrets：`TURNSTILE_SECRET_KEY`，可选的缓存清理凭据。辅助 Worker secrets：`BETTER_AUTH_SECRET`（随机高熵，至少 32 字符）、`TURNSTILE_SECRET_KEY`、只读成本源 `CF_MONITOR_TOKEN`、仅可更新指定规则的 `CF_API_TOKEN`。发信域已启用不代表所有邮箱服务商投递已验证，仍需单独授权测试真实邮件。
 
-D1 按文件顺序应用 `0001_business.sql`、`0002_auth.sql`。初始化管理员时，在受控的本地或已授权数据库操作中将已验证账户 ID 加入 `user_profiles` 并设 role='admin'；禁止自动把第一位注册用户设为管理员。管理员登录后必须启用 TOTP 并验证当前会话，保存恢复码后再使用审核台。
+D1 按文件顺序应用 `0001_business.sql`、`0002_auth.sql`、`0003_revision_storage.sql`，然后部署依赖这些表和触发器的代码。第三个迁移先计量现有修订，再对新增或增长内容实施全站与店铺配额；已有内容超过配额时仍允许等量或减量替换。调整 `revision_storage_policy` 前核对实际容量和费用，不直接改写计量表。
+
+初始化管理员时，在受控的本地或已授权数据库操作中将已验证账户 ID 加入 `user_profiles` 并设 role='admin'；禁止自动把第一位注册用户设为管理员。管理员登录后必须启用 TOTP 并验证当前会话，保存恢复码后再使用审核台。首次完成 MFA 设置会撤销其他已有会话；密钥和恢复码仅在初始设置中交付，公开认证接口不提供再次导出或生成恢复码的入口。
 
 ## 上线访问规则
 
