@@ -49,6 +49,71 @@ describe("native password security", () => {
 });
 
 describe("email authentication and admin MFA", () => {
+    it("blocks MFA secret exports and revokes pre-enrollment sessions while preserving backup-code login", async () => {
+        const f = fixture();
+        try {
+            const email = "mfa-boundary@example.com";
+            expect((await handleAuth(f.request("/sign-up/email", { name: "Admin", email, password: PASSWORD }), f.env)).status).toBe(200);
+            const verificationUrl = /https:\/\/[^\s]+/.exec(f.messages[0].text ?? "")![0];
+            await handleAuth(new Request(verificationUrl), f.env);
+            const first = await handleAuth(f.request("/sign-in/email", { email, password: PASSWORD }), f.env);
+            const other = await handleAuth(f.request("/sign-in/email", { email, password: PASSWORD }), f.env);
+            const firstCookie = f.cookie(first);
+            const otherCookie = f.cookie(other);
+            const auth = createAuth(f.env);
+            const user = await getSessionUser(auth, f.env, new Headers({ cookie: firstCookie }));
+            f.database.prepare("INSERT INTO user_profiles(user_id,role,banned) VALUES(?,'admin',0)").run(user!.id);
+            const enabled = await handleAuth(f.request("/two-factor/enable", { password: PASSWORD, method: "totp" }, firstCookie), f.env);
+            expect(enabled.status).toBe(200);
+            const setup = await enabled.json() as { totpURI: string; backupCodes: string[] };
+            const code = await totp(new URL(setup.totpURI).searchParams.get("secret")!);
+            const completed = await handleAuth(f.request("/two-factor/verify-totp", { code }, firstCookie), f.env);
+            expect(completed.status).toBe(200);
+            const secureCookie = f.cookie(completed) || firstCookie;
+
+            for (const cookie of [otherCookie, secureCookie]) {
+                for (const path of ["/two-factor/get-totp-uri", "/two-factor/generate-backup-codes", "/two-factor/get-totp-uri/", "/two-factor/%67et-totp-uri"]) {
+                    const denied = await handleAuth(f.request(path, { password: PASSWORD }, cookie), f.env);
+                    expect(denied.status, path).toBe(404);
+                }
+            }
+            expect(await getSessionUser(auth, f.env, new Headers({ cookie: otherCookie }))).toBeNull();
+            expect(await getSessionUser(auth, f.env, new Headers({ cookie: secureCookie }))).toMatchObject({ role: "admin", twoFactorVerified: true });
+
+            const challenge = await handleAuth(f.request("/sign-in/email", { email, password: PASSWORD }), f.env);
+            expect(await challenge.clone().json()).toMatchObject({ twoFactorRedirect: true });
+            const recovered = await handleAuth(f.request("/two-factor/verify-backup-code", { code: setup.backupCodes[0] }, f.cookie(challenge)), f.env);
+            expect(recovered.status, await recovered.clone().text()).toBe(200);
+            expect(await getSessionUser(auth, f.env, new Headers({ cookie: f.cookie(recovered) }))).toMatchObject({ role: "admin", twoFactorVerified: true });
+            expect(await getSessionUser(auth, f.env, new Headers({ cookie: secureCookie }))).toMatchObject({ twoFactorVerified: true });
+        } finally { f.database.close(); }
+    });
+
+    it("shares the reset callback rate limit across arbitrary tokens before database lookups", async () => {
+        const f = fixture();
+        try {
+            const buckets = new Map<string, number>();
+            f.env.AUTH_RATE_LIMIT = Object.assign({} as RateLimit, { limit: async ({ key }: { key: string }) => {
+                const count = (buckets.get(key) ?? 0) + 1;
+                buckets.set(key, count);
+                return { success: count <= 20 };
+            } });
+            const callback = encodeURIComponent(`${f.env.ORIGIN}/en/account?mode=reset`);
+            for (let index = 0; index < 20; index++) {
+                const response = await handleAuth(f.request(`/reset-password/fake-token-${index}?callbackURL=${callback}`), f.env);
+                expect(response.status).toBe(302);
+            }
+            const before = f.queries.length;
+            const denied = await handleAuth(f.request(`/reset-password/${"a".repeat(256)}?callbackURL=${callback}`), f.env);
+            expect(denied.status).toBe(429);
+            expect(f.queries).toHaveLength(before);
+            expect(buckets.size).toBe(1);
+            expect(f.queries.filter((query) => query.values.some((value) => typeof value === "string" && value.startsWith("reset-password:")))).toHaveLength(20);
+            expect((await handleAuth(f.request("/reset-password", { token: "another-token", newPassword: PASSWORD }), f.env)).status).toBe(429);
+            expect(f.queries).toHaveLength(before);
+        } finally { f.database.close(); }
+    });
+
     it("requires verified email, records session-specific MFA, and revokes it on sign-out", async () => {
         const f = fixture();
         const signUp = await handleAuth(f.request("/sign-up/email", { name: "Test", email: "test@example.com", password: PASSWORD }), f.env);

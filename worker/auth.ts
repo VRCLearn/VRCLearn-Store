@@ -88,7 +88,7 @@ const MFA_PATHS = new Set(["/two-factor/verify-totp", "/two-factor/verify-backup
 const AUTH_PATHS = new Set([
     ...TOKEN_PATHS, ...MFA_PATHS, "/verify-email", "/reset-password", "/get-session", "/sign-out",
     "/list-sessions", "/revoke-session", "/revoke-sessions", "/revoke-other-sessions", "/change-password", "/update-user",
-    "/two-factor/enable", "/two-factor/disable", "/two-factor/get-totp-uri", "/two-factor/generate-backup-codes",
+    "/two-factor/enable", "/two-factor/disable",
 ]);
 
 export async function verifyTurnstile(env: SupportEnv, request: Request, token: unknown): Promise<boolean> {
@@ -115,7 +115,8 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
     const ip = request.headers.get("cf-connecting-ip");
     if (!ip && env.ENVIRONMENT === "production") return failure("IP_UNAVAILABLE", "Trusted client address is missing", 403);
     const ipKey = await digestKey(ip ?? "local");
-    if (!(await env.AUTH_RATE_LIMIT.limit({ key: `${ipKey}:${path}` })).success) return failure("RATE_LIMITED", "Please try again later", 429, 60);
+    const operation = passwordResetLink ? "/reset-password" : path;
+    if (!(await env.AUTH_RATE_LIMIT.limit({ key: `${ipKey}:${operation}` })).success) return failure("RATE_LIMITED", "Please try again later", 429, 60);
     let data: Record<string, unknown> = {};
     let forwarded = request;
     if (request.method === "POST") {
@@ -153,6 +154,7 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
         const current = await getSessionUser(auth, env, request.headers);
         if (current?.role === "admin") return failure("ADMIN_MFA_REQUIRED", "Administrators cannot disable MFA", 403);
     }
+    const beforeVerification = MFA_PATHS.has(path) ? await auth.api.getSession({ headers: request.headers }) : null;
     const result = await auth.handler(forwarded);
     if (result.ok && MFA_PATHS.has(path)) {
         const cookies = new Map<string, string>();
@@ -168,8 +170,17 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
         const proofHeaders = new Headers(request.headers);
         proofHeaders.set("cookie", Array.from(cookies, ([key, value]) => `${key}=${value}`).join("; "));
         const session = await auth.api.getSession({ headers: proofHeaders });
-        if (session?.user.twoFactorEnabled) await env.DB.prepare("INSERT INTO auth_mfa_sessions(session_id,user_id,expires_at) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET expires_at=excluded.expires_at")
-            .bind(session.session.id, session.user.id, new Date(session.session.expiresAt).getTime()).run();
+        if (session?.user.twoFactorEnabled) {
+            const statements: D1PreparedStatement[] = [];
+            // MFA activation invalidates sessions established with only a password.
+            // Later challenge logins leave other MFA-verified sessions intact.
+            if (beforeVerification && !beforeVerification.user.twoFactorEnabled && beforeVerification.user.id === session.user.id) {
+                statements.push(env.DB.prepare("DELETE FROM auth_session WHERE userId = ? AND id != ?").bind(session.user.id, session.session.id));
+            }
+            statements.push(env.DB.prepare("INSERT INTO auth_mfa_sessions(session_id,user_id,expires_at) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET expires_at=excluded.expires_at")
+                .bind(session.session.id, session.user.id, new Date(session.session.expiresAt).getTime()));
+            await env.DB.batch(statements);
+        }
     }
     const headers = new Headers(result.headers);
     headers.set("Cache-Control", "no-store");
