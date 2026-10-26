@@ -193,8 +193,19 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
             const shop = await shopFor(env, user.id);
             if (path === "merchant/shop" && request.method === "PUT") {
                 const body = await jsonBody(request, shopSchema);
+                const previous = await env.DB.prepare("SELECT id, status, created_at FROM shop_revisions WHERE shop_id = ? ORDER BY created_at DESC, id DESC LIMIT 1").bind(shop.id).first<{ id: string; status: string; created_at: string }>();
+                if (!previous) throw new HttpError(409, "REVISION_UNAVAILABLE", "The latest shop revision is unavailable.");
                 const revisionId = crypto.randomUUID();
-                await env.DB.batch([env.DB.prepare("UPDATE shop_revisions SET status = 'withdrawn' WHERE shop_id = ? AND status = 'pending'").bind(shop.id), env.DB.prepare("INSERT INTO shop_revisions (id, shop_id, content_json, status, created_at) VALUES (?, ?, ?, 'pending', ?)").bind(revisionId, shop.id, JSON.stringify(body), now()), audit(env, user, "shop.submit", shop.id)]);
+                const timestamp = new Date(Math.max(Date.now(), Date.parse(previous.created_at) + 1)).toISOString();
+                const guard = `id = ? AND shop_id = ? AND status = ? AND id = (SELECT id FROM shop_revisions WHERE shop_id = ? ORDER BY created_at DESC, id DESC LIMIT 1)`;
+                await env.DB.batch([
+                    // Replacing the primary key gives each content version a fresh public identity.
+                    env.DB.prepare(`UPDATE shop_revisions SET id = ?, content_json = ?, created_at = ?, review_reason = '', decision_token = NULL WHERE ${guard} AND status = 'pending' AND NOT EXISTS (SELECT 1 FROM shops WHERE current_revision_id = shop_revisions.id)`).bind(revisionId, JSON.stringify(body), timestamp, previous.id, shop.id, previous.status, shop.id),
+                    env.DB.prepare(`INSERT INTO shop_revisions (id, shop_id, content_json, status, created_at) SELECT ?, ?, ?, 'pending', ? WHERE NOT EXISTS (SELECT 1 FROM shop_revisions WHERE id = ?) AND EXISTS (SELECT 1 FROM shop_revisions WHERE ${guard})`).bind(revisionId, shop.id, JSON.stringify(body), timestamp, revisionId, previous.id, shop.id, previous.status, shop.id),
+                    audit(env, user, "shop.submit", shop.id),
+                ]);
+                const saved = await env.DB.prepare("SELECT id FROM shop_revisions WHERE id = ?").bind(revisionId).first();
+                if (!saved) throw new HttpError(409, "REVISION_CONFLICT", "This shop changed while you were editing. Refresh and try again.");
                 return response({ revisionId });
             }
             if (path === "merchant/permissions" && request.method === "POST") {
@@ -230,8 +241,19 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                     await ownedMedia(env, id, shop.id, body.mediaIds);
                     const revisionId = crypto.randomUUID();
                     const timestamp = now();
-                    await env.DB.batch([env.DB.prepare(`INSERT INTO product_revisions (id, product_id, content_json, status, created_at, updated_at) SELECT ?, ?, ?, 'draft', ?, ? WHERE EXISTS (SELECT 1 FROM products p JOIN product_revisions r ON r.id = p.latest_revision_id WHERE p.id = ? AND p.latest_revision_id = ? AND r.status != 'pending')
-                        AND NOT EXISTS (SELECT 1 FROM json_each(?, '$.mediaIds') refs LEFT JOIN media m ON m.id = refs.value AND m.product_id = ? AND m.shop_id = ? AND m.retiring = 0 WHERE m.id IS NULL)`).bind(revisionId, id, JSON.stringify(body), timestamp, timestamp, id, revision.id, JSON.stringify(body), id, shop.id), env.DB.prepare("UPDATE products SET latest_revision_id = ?, updated_at = ? WHERE id = ? AND latest_revision_id = ? AND EXISTS (SELECT 1 FROM product_revisions WHERE id = ?)").bind(revisionId, timestamp, id, revision.id, revisionId)]);
+                    const contentJson = JSON.stringify(body);
+                    const editable = `EXISTS (SELECT 1 FROM products p JOIN product_revisions r ON r.id = p.latest_revision_id WHERE p.id = ? AND p.latest_revision_id = ? AND r.status != 'pending')`;
+                    const media = `NOT EXISTS (SELECT 1 FROM json_each(?, '$.mediaIds') refs LEFT JOIN media m ON m.id = refs.value AND m.product_id = ? AND m.shop_id = ? AND m.retiring = 0 WHERE m.id IS NULL)`;
+                    await env.DB.batch([
+                        env.DB.prepare(`UPDATE product_revisions SET id = ?, content_json = ?, created_at = ?, updated_at = ? WHERE id = ? AND product_id = ? AND status = 'draft' AND submission_token IS NULL
+                            AND NOT EXISTS (SELECT 1 FROM products WHERE current_revision_id = product_revisions.id)
+                            AND NOT EXISTS (SELECT 1 FROM publication_requests WHERE revision_id = product_revisions.id)
+                            AND NOT EXISTS (SELECT 1 FROM publications WHERE revision_id = product_revisions.id)
+                            AND NOT EXISTS (SELECT 1 FROM public_media WHERE revision_id = product_revisions.id)
+                            AND ${editable} AND ${media}`).bind(revisionId, contentJson, timestamp, timestamp, revision.id, id, id, revision.id, contentJson, id, shop.id),
+                        env.DB.prepare(`INSERT INTO product_revisions (id, product_id, content_json, status, created_at, updated_at) SELECT ?, ?, ?, 'draft', ?, ? WHERE NOT EXISTS (SELECT 1 FROM product_revisions WHERE id = ?) AND ${editable} AND ${media}`).bind(revisionId, id, contentJson, timestamp, timestamp, revisionId, id, revision.id, contentJson, id, shop.id),
+                        env.DB.prepare("UPDATE products SET latest_revision_id = ?, updated_at = ? WHERE id = ? AND latest_revision_id = ? AND EXISTS (SELECT 1 FROM product_revisions WHERE id = ? AND product_id = ?)").bind(revisionId, timestamp, id, revision.id, revisionId, id),
+                    ]);
                     const check = await env.DB.prepare("SELECT latest_revision_id FROM products WHERE id = ?").bind(id).first<{ latest_revision_id: string }>();
                     if (check?.latest_revision_id !== revisionId) throw new HttpError(409, "REVISION_CONFLICT", "This product changed while you were editing. Refresh and try again.");
                     return response({ id, revisionId });
@@ -361,6 +383,7 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
         throw new HttpError(404, "ENDPOINT_NOT_FOUND", "This API endpoint could not be found.");
     } catch (error) {
         if (error instanceof z.ZodError) return failure(new HttpError(400, "INVALID_INPUT", "The request contains invalid identifiers or values."), requestId);
+        if (error instanceof Error && error.message.includes("REVISION_STORAGE_QUOTA_EXCEEDED")) return failure(new HttpError(429, "REVISION_STORAGE_QUOTA_EXCEEDED", "The retained revision content allowance has been reached. Try again after capacity is available."), requestId);
         return failure(error, requestId);
     }
 }

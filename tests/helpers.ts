@@ -63,6 +63,7 @@ export const admin: SessionUser = { id: "admin-one", email: "admin@example.com",
 export function testEnvironment() {
     const sql = sqliteD1();
     sql.database.exec(readFileSync("migrations/0001_business.sql", "utf8"));
+    sql.database.exec(readFileSync("migrations/0003_revision_storage.sql", "utf8"));
     const state = new Map<string, string>();
     const privateMedia = new Map<string, Uint8Array>();
     const publicMedia = new Map<string, Uint8Array>();

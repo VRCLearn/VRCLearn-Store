@@ -23,6 +23,7 @@ export function localizedError(error: unknown, t: Record<MessageKey, string>): s
         INVALID_SORT: "invalidFilters", INVALID_CURSOR: "refreshRequired", INVALID_INPUT: "checkFields",
         INVALID_IMAGE: "uploadHint", BODY_TOO_LARGE: "uploadHint", PAYLOAD_TOO_LARGE: "checkFields",
         QUOTA_EXCEEDED: "tooManyRequests", RATE_LIMITED: "tooManyRequests", STORAGE_QUOTA_EXCEEDED: "actionUnavailable",
+        REVISION_STORAGE_QUOTA_EXCEEDED: "actionUnavailable",
         DUPLICATE_OPERATION: "duplicateAction", REVISION_CONFLICT: "refreshRequired", REVIEW_CONFLICT: "refreshRequired",
         REGION_PERMISSION_REQUIRED: "permissionRequired", SHOP_REVIEW_REQUIRED: "shopApprovalRequired",
         ALL_REGIONS_REQUIRED: "allRegionsRequired", WITHDRAW_REQUIRED: "pendingImmutable",
