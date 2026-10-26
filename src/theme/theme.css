@@ -1,0 +1,48 @@
+/* Layout only: Material Web owns dialog, chip, select, field and slider visuals. */
+.theme-settings-content {
+    display: grid;
+    gap: 24px;
+}
+
+.theme-settings-content > p,
+.theme-setting-section > h3 {
+    margin: 0;
+}
+
+.theme-setting-section {
+    display: grid;
+    gap: 16px;
+}
+
+.theme-color-fields {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+    gap: 16px;
+}
+
+.theme-color-fields > input[type="color"] {
+    inline-size: 56px;
+    block-size: 56px;
+    cursor: pointer;
+}
+
+.theme-fine-controls > summary {
+    cursor: pointer;
+}
+
+.theme-slider-list {
+    display: grid;
+    gap: 16px;
+    margin-block-start: 24px;
+}
+
+.theme-slider-label {
+    display: flex;
+    justify-content: space-between;
+    gap: 16px;
+}
+
+.theme-slider-row > md-slider {
+    inline-size: 100%;
+}
