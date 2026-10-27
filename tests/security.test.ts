@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppEnv } from "../server/env";
 import { imageInfo } from "../server/media";
-import { HttpError, isPublicHttps, mode, readBytes, regionOf, secureOrigin, turnstile } from "../server/security";
+import { failure, HttpError, isPublicHttps, mode, readBytes, regionOf, reserve, secureOrigin, turnstile } from "../server/security";
 import { ftsQuery, productSchema, searchTokens } from "../server/validation";
 
 const env = { ORIGIN: "https://store.vrclearn.com", ENVIRONMENT: "production", TURNSTILE_SECRET_KEY: "test-only-secret" } as AppEnv;
@@ -98,5 +98,69 @@ describe("verification and stale metering", () => {
         await expect(mode(production, true)).rejects.toMatchObject({ code: "SERVICE_PAUSED" });
         production.STATE.get = vi.fn().mockResolvedValue({ mode: "normal", updatedAt: new Date().toISOString() });
         await expect(mode(production, true)).resolves.toBeUndefined();
+    });
+    it.each([
+        null,
+        { mode: "unknown", updatedAt: new Date().toISOString() },
+        { mode: "normal", updatedAt: "not-a-date" },
+        { mode: "normal", updatedAt: new Date(Date.now() + 120_000).toISOString() },
+        { mode: "restricted", updatedAt: new Date().toISOString() },
+    ])("keeps low-cost reads available but blocks production writes for invalid or restricted state %j", async (value) => {
+        const production = { ...env, STATE: Object.assign({} as KVNamespace, { get: vi.fn().mockResolvedValue(value) }) };
+        await expect(mode(production)).resolves.toBeUndefined();
+        await expect(mode(production, true)).rejects.toMatchObject({ status: 503, code: "SERVICE_PAUSED" });
+    });
+    it("blocks all operations when KV cannot establish the maintenance state", async () => {
+        const production = { ...env, STATE: Object.assign({} as KVNamespace, { get: vi.fn().mockRejectedValue(new Error("KV unavailable")) }) };
+        await expect(mode(production)).rejects.toMatchObject({ status: 503, code: "SERVICE_PAUSED" });
+        await expect(mode(production, true)).rejects.toMatchObject({ status: 503, code: "SERVICE_PAUSED" });
+    });
+    it("keeps maintenance active even when its timestamp has expired", async () => {
+        const production = { ...env, STATE: Object.assign({} as KVNamespace, { get: vi.fn().mockResolvedValue({ mode: "maintenance", updatedAt: "invalid" }) }) };
+        await expect(mode(production)).rejects.toMatchObject({ code: "SERVICE_PAUSED" });
+        await expect(mode(production, true)).rejects.toMatchObject({ code: "SERVICE_PAUSED" });
+    });
+});
+
+describe("quota denial responses", () => {
+    const limits = [{ key: "test:day", limit: 1, windowSeconds: 86400 }];
+    function quotaEnvironment(response: Response) {
+        const fetch = vi.fn(async () => response);
+        return { env: { ...env, QUOTA: Object.assign({} as AppEnv["QUOTA"], { getByName: () => ({ fetch }) }) }, fetch };
+    }
+    it.each([
+        { duplicate: false, status: 429, code: "QUOTA_EXCEEDED" },
+        { duplicate: true, status: 409, code: "DUPLICATE_OPERATION" },
+    ])("preserves the denial and Retry-After for duplicate=$duplicate", async ({ duplicate, status, code }) => {
+        const f = quotaEnvironment(Response.json({ allowed: false, duplicate, retryAfter: 37 }, { status: 429 }));
+        const result = await reserve(f.env, limits).catch((error: unknown) => failure(error));
+        expect(result).toBeInstanceOf(Response);
+        if (!(result instanceof Response)) throw new Error("Expected quota denial");
+        expect(result.status).toBe(status);
+        expect(result.headers.get("Retry-After")).toBe("37");
+        expect(await result.json()).toMatchObject({ error: { code } });
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+    });
+    it("accepts one successful reservation", async () => {
+        const f = quotaEnvironment(Response.json({ allowed: true }));
+        await expect(reserve(f.env, limits)).resolves.toBeUndefined();
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+    });
+    it.each([
+        new Response("unavailable", { status: 503 }),
+        new Response("invalid JSON", { status: 429 }),
+        Response.json({ allowed: false }, { status: 200 }),
+        Response.json({ allowed: true }, { status: 429 }),
+        Response.json({ allowed: true, duplicate: true }),
+        Response.json({ allowed: false, retryAfter: -1 }, { status: 429 }),
+        Response.json({ allowed: "false" }, { status: 429 }),
+    ])("fails closed for a failed or malformed quota response", async (response) => {
+        const f = quotaEnvironment(response);
+        await expect(reserve(f.env, limits)).rejects.toMatchObject({ status: 503, code: "QUOTA_UNAVAILABLE" });
+        expect(f.fetch).toHaveBeenCalledTimes(1);
+    });
+    it("maps a failed quota binding call to service unavailable", async () => {
+        const production = { ...env, QUOTA: Object.assign({} as AppEnv["QUOTA"], { getByName: () => { throw new Error("Binding unavailable"); } }) };
+        await expect(reserve(production, limits)).rejects.toMatchObject({ status: 503, code: "QUOTA_UNAVAILABLE" });
     });
 });

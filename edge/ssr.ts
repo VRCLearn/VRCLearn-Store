@@ -5,6 +5,7 @@ import { getProduct, getShop, sitemap } from "../server/catalog";
 import { HttpError, regionOf } from "../server/security";
 import { escapeHtml, safeJson, safeMarkdown } from "./html";
 import { allowedHost, secureResponse, unavailable } from "./respond";
+import { serviceEnabled } from "./budget";
 
 type EdgeContext = EventContext<AppEnv, string, unknown>;
 
@@ -13,15 +14,6 @@ function outward(response: Response, head = false): Response {
     // Only our explicit region-keyed Cache API entries may be shared.
     result.headers.set("Cache-Control", "private, no-store");
     return result;
-}
-
-async function maintenance(env: AppEnv): Promise<boolean> {
-    try {
-        const state = await env.STATE.get<{ mode?: string }>("budget:state", "json");
-        return state?.mode === "maintenance";
-    } catch {
-        return true;
-    }
 }
 
 function csp(nonce: string, mediaOrigin: string): string {
@@ -54,7 +46,7 @@ export async function detailPage(context: EdgeContext, kind: "product" | "shop")
         const pieces = new URL(request.url).pathname.split("/").filter(Boolean);
         const locale = pieces[0] as Locale;
         if (!LOCALES.includes(locale) || pieces.length !== 3) throw new HttpError(404, "NOT_FOUND", "Page not found.");
-        if (await maintenance(env)) return secureResponse(unavailable());
+        if (!await serviceEnabled(env)) return secureResponse(unavailable());
         const key = await cacheKey(request, env);
         const cached = await caches.default.match(key);
         if (cached) return outward(cached, request.method === "HEAD");
@@ -99,7 +91,7 @@ export async function sitemapPage(context: EdgeContext): Promise<Response> {
     if (!allowedHost(request, env)) return new Response("Not found", { status: 404 });
     try {
         regionOf(request);
-        if (await maintenance(env)) return unavailable();
+        if (!await serviceEnabled(env)) return unavailable();
         const path = new URL(request.url).pathname;
         if (path === "/sitemap.xml") {
             const body = `<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${LOCALES.map((locale) => `<sitemap><loc>${env.ORIGIN}/sitemaps/${locale}.xml</loc></sitemap>`).join("")}</sitemapindex>`;

@@ -1,6 +1,8 @@
 import { z } from "zod";
 import type { Region, SessionUser } from "../shared/contracts";
 import type { AppEnv } from "./env";
+import { serviceEnabled } from "../edge/budget";
+import { validQuotaResponse } from "../worker/quota-core";
 
 export class HttpError extends Error {
     constructor(public status: number, public code: string, message: string, public retryAfter?: number) {
@@ -97,13 +99,22 @@ export interface QuotaLimit {
 }
 
 export async function reserve(env: AppEnv, limits: QuotaLimit[], key = crypto.randomUUID()): Promise<void> {
-    const stub = env.QUOTA.getByName("global");
-    const response = await stub.fetch("https://quota.internal/reserve", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, limits }),
-    });
-    if (!response.ok) throw new HttpError(503, "QUOTA_UNAVAILABLE", "This operation is temporarily paused.");
-    const result = await response.json() as { allowed: boolean; retryAfter?: number; duplicate?: boolean };
-    if (!result.allowed) throw new HttpError(result.duplicate ? 409 : 429, result.duplicate ? "DUPLICATE_OPERATION" : "QUOTA_EXCEEDED", "This operation is limited. Please try again later.", result.retryAfter ?? 60);
+    let response: Response;
+    let value: unknown;
+    try {
+        const stub = env.QUOTA.getByName("global");
+        response = await stub.fetch("https://quota.internal/reserve", {
+            method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, limits }),
+        });
+        if (response.status !== 200 && response.status !== 429) throw new Error("QUOTA_UNAVAILABLE");
+        value = await response.json();
+    } catch {
+        throw new HttpError(503, "QUOTA_UNAVAILABLE", "This operation is temporarily paused.");
+    }
+    if (!validQuotaResponse(value, response.status)) {
+        throw new HttpError(503, "QUOTA_UNAVAILABLE", "This operation is temporarily paused.");
+    }
+    if (!value.allowed) throw new HttpError(value.duplicate ? 409 : 429, value.duplicate ? "DUPLICATE_OPERATION" : "QUOTA_EXCEEDED", "This operation is limited. Please try again later.", value.retryAfter ?? 60);
 }
 
 export async function publicRate(request: Request, env: AppEnv): Promise<void> {
@@ -134,10 +145,7 @@ export async function turnstile(request: Request, env: AppEnv, token: string, ex
 }
 
 export async function mode(env: AppEnv, highCost = false): Promise<void> {
-    const budget = await env.STATE.get<{ mode: string; updatedAt: string }>("budget:state", "json");
-    const updatedAt = budget ? Date.parse(budget.updatedAt) : NaN;
-    const stale = !Number.isFinite(updatedAt) || Date.now() - updatedAt > 1800000;
-    if (budget?.mode === "maintenance" || (highCost && (budget?.mode === "restricted" || (env.ENVIRONMENT === "production" && stale)))) {
+    if (!await serviceEnabled(env, highCost)) {
         throw new HttpError(503, "SERVICE_PAUSED", "This operation is temporarily paused to protect service capacity.");
     }
 }

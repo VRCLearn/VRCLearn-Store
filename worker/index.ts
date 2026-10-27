@@ -4,6 +4,7 @@ import { failure } from "./http";
 import { runMonitor } from "./monitor";
 import { cleanupStaleMedia } from "../edge/cleanup";
 import { cleanupExpiredAuth } from "./session-cleanup";
+import { serviceEnabled } from "../edge/budget";
 export { QuotaGate } from "./quota";
 
 export default {
@@ -11,6 +12,7 @@ export default {
         try {
             const path = new URL(request.url).pathname;
             if (path === "/internal/session" && request.method === "GET") {
+                if (!await serviceEnabled(env)) return failure("SERVICE_PAUSED", "This operation is temporarily paused", 503, 60);
                 return Response.json(await getSessionUser(createAuth(env), env, request.headers), { headers: { "Cache-Control": "no-store" } });
             }
             if (path.startsWith("/api/auth/")) return await handleAuth(request, env);
@@ -23,8 +25,8 @@ export default {
     },
     async scheduled(_controller, env, ctx): Promise<void> {
         ctx.waitUntil((async () => {
-            try { await runMonitor(env); }
-            catch { console.warn(JSON.stringify({ event: "budget_check_failed" })); }
+            try { if ((await runMonitor(env)).mode === "maintenance") return; }
+            catch { console.warn(JSON.stringify({ event: "budget_check_failed" })); return; }
             try { await cleanupStaleMedia(env); }
             catch { console.warn(JSON.stringify({ event: "media_cleanup_failed" })); }
             try { await cleanupExpiredAuth(env); }

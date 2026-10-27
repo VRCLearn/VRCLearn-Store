@@ -5,6 +5,7 @@ import type { SupportEnv } from "./env";
 import { sendAccountEmail, reserve, accountEmailsEnabled } from "./email";
 import { digestKey, failure, readBounded } from "./http";
 import { hashPassword, verifyPassword } from "./password";
+import { serviceEnabled } from "../edge/budget";
 
 function buildAuth(env: SupportEnv) {
     if (!env.BETTER_AUTH_SECRET || env.BETTER_AUTH_SECRET.length < 32) throw new Error("AUTH_SECRET_NOT_CONFIGURED");
@@ -107,6 +108,7 @@ export async function verifyTurnstile(env: SupportEnv, request: Request, token: 
 }
 
 export async function handleAuth(request: Request, env: SupportEnv): Promise<Response> {
+    if (!await serviceEnabled(env)) return failure("SERVICE_PAUSED", "Account operations are temporarily paused", 503, 60);
     const url = new URL(request.url);
     const path = url.pathname.slice("/api/auth".length);
     const passwordResetLink = request.method === "GET" && /^\/reset-password\/[A-Za-z0-9_-]{8,256}$/.test(path);

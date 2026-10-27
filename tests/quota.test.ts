@@ -55,5 +55,7 @@ describe("atomic cost reservations", () => {
         expect(validQuotaRequest({ key: "valid:key", limits: [{ key: "size", limit: 10, amount: -1, windowSeconds: 60 }] })).toBe(false);
         expect(validQuotaRequest({ key: "valid:key", limits: [1, 2].map(() => ({ key: "same", limit: 10, windowSeconds: 60 })) })).toBe(false);
         expect(validQuotaRequest({ key: "x".repeat(161), limits: [] })).toBe(false);
+        expect(validQuotaRequest({ key: "valid:key", limits: [null] })).toBe(false);
+        expect(validQuotaRequest({ key: "valid:key", limits: [7] })).toBe(false);
     });
 });

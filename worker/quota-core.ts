@@ -20,17 +20,26 @@ export interface QuotaTransaction {
 }
 interface Counter { used: number; expiresAt: number }
 
+export function validQuotaResponse(value: unknown, status: number): value is QuotaResult {
+    return (status === 200 || status === 429) && typeof value === "object" && value !== null && !Array.isArray(value)
+        && "allowed" in value && typeof value.allowed === "boolean" && value.allowed === (status === 200)
+        && !(value.allowed && "duplicate" in value && value.duplicate === true)
+        && (!("duplicate" in value) || typeof value.duplicate === "boolean")
+        && (!("retryAfter" in value) || (typeof value.retryAfter === "number" && Number.isSafeInteger(value.retryAfter) && value.retryAfter >= 1));
+}
+
 export function validQuotaRequest(value: unknown): value is QuotaRequest {
     if (!value || typeof value !== "object") return false;
     const input = value as Partial<QuotaRequest>;
     return typeof input.key === "string" && /^[a-zA-Z0-9:_-]{8,160}$/.test(input.key)
         && Array.isArray(input.limits) && input.limits.length > 0 && input.limits.length <= 12
-        && new Set(input.limits.map((limit) => limit.key)).size === input.limits.length
-        && input.limits.every((limit) => typeof limit.key === "string" && /^[a-zA-Z0-9:_-]{1,160}$/.test(limit.key)
+        && input.limits.every((limit) => limit !== null && typeof limit === "object"
+            && typeof limit.key === "string" && /^[a-zA-Z0-9:_-]{1,160}$/.test(limit.key)
             && Number.isSafeInteger(limit.limit) && limit.limit > 0 && limit.limit <= 1_000_000_000_000
             && Number.isSafeInteger(limit.windowSeconds) && limit.windowSeconds >= 1 && limit.windowSeconds <= 2_678_400
             && (limit.amount === undefined || Number.isSafeInteger(limit.amount) && limit.amount >= 1 && limit.amount <= limit.limit)
-            && (limit.period === undefined || limit.period === "month"));
+            && (limit.period === undefined || limit.period === "month"))
+        && new Set(input.limits.map((limit) => limit.key)).size === input.limits.length;
 }
 
 export async function reserveQuota(tx: QuotaTransaction, input: QuotaRequest, now: number): Promise<QuotaResult> {

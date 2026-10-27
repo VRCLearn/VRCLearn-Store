@@ -11,6 +11,7 @@
     "observability": { "enabled": true, "head_sampling_rate": 0.01 },
     "vars": {
         "ORIGIN": "https://store.vrclearn.com",
+        "MEDIA_ORIGIN": "https://store-media.vrclearn.com",
         "ENVIRONMENT": "production",
         "EMAIL_FROM": "noreply@vrclearn.com",
         "ALERT_EMAIL": "",
@@ -18,6 +19,7 @@
         "CF_ZONE_ID": "",
         "EDGE_RULESET_ID": "",
         "EDGE_RULE_ID": "",
+        "EDGE_MEDIA_RULE_ID": "",
         "D1_DATABASE_ID": "",
         "PAGES_PROJECT_NAME": "vrclearn-store",
         "SUPPORT_SCRIPT_NAME": "vrclearn-store-support",

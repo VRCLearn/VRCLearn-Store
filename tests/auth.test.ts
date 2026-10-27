@@ -20,7 +20,7 @@ function fixture() {
         BETTER_AUTH_SECRET: "only-for-tests-24c41d71-e740-4542-ad8c-12d206952f17",
         AUTH_RATE_LIMIT: Object.assign({} as RateLimit, { limit: async () => ({ success: true }) }),
         EMAIL: Object.assign({} as SendEmail, { send: async (message: { text?: string }) => { messages.push(message); return { messageId: "test" }; } }),
-        EMAIL_FROM: "noreply@vrclearn.com", ALERT_EMAIL: "", CF_ACCOUNT_ID: "", CF_ZONE_ID: "", EDGE_RULESET_ID: "", EDGE_RULE_ID: "",
+        EMAIL_FROM: "noreply@vrclearn.com", ALERT_EMAIL: "", CF_ACCOUNT_ID: "", CF_ZONE_ID: "", EDGE_RULESET_ID: "", EDGE_RULE_ID: "", EDGE_MEDIA_RULE_ID: "",
         D1_DATABASE_ID: "", PAGES_PROJECT_NAME: "vrclearn-store", SUPPORT_SCRIPT_NAME: "vrclearn-store-support", PRIVATE_BUCKET_NAME: "private", PUBLIC_BUCKET_NAME: "public",
     };
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
@@ -49,6 +49,48 @@ describe("native password security", () => {
 });
 
 describe("email authentication and admin MFA", () => {
+    it.each(["maintenance", "kv-failure"])("stops every account route for %s before rate limits, Turnstile or database work", async (state) => {
+        const f = fixture();
+        try {
+            f.env.ENVIRONMENT = "production";
+            if (state === "maintenance") f.state.set("budget:state", JSON.stringify({ mode: "maintenance", updatedAt: new Date().toISOString() }));
+            else vi.spyOn(f.env.STATE, "get").mockRejectedValue(new Error("KV unavailable"));
+            const rate = vi.spyOn(f.env.AUTH_RATE_LIMIT, "limit");
+            const before = f.queries.length;
+            for (const path of ["/get-session", "/list-sessions", "/verify-email", "/reset-password/arbitrary-token-0001"]) {
+                const result = await handleAuth(f.request(path), f.env);
+                expect(result.status, path).toBe(503);
+                expect(result.headers.get("Retry-After"), path).toBe("60");
+            }
+            for (const path of ["/sign-in/email", "/sign-up/email", "/request-password-reset", "/reset-password", "/two-factor/verify-totp", "/change-password", "/sign-out"]) {
+                expect((await handleAuth(f.request(path, {}), f.env)).status, path).toBe(503);
+            }
+            expect(rate).not.toHaveBeenCalled();
+            expect(globalThis.fetch).not.toHaveBeenCalled();
+            expect(f.queries).toHaveLength(before);
+            expect(f.messages).toHaveLength(0);
+        } finally { f.database.close(); }
+    });
+
+    it("allows password login in restricted mode while blocking account email operations", async () => {
+        const f = fixture();
+        try {
+            const email = "restricted@example.com";
+            expect((await handleAuth(f.request("/sign-up/email", { name: "User", email, password: PASSWORD }), f.env)).status).toBe(200);
+            await handleAuth(new Request(/https:\/\/[^\s]+/.exec(f.messages[0].text ?? "")![0]), f.env);
+            f.env.ENVIRONMENT = "production";
+            f.state.set("budget:state", JSON.stringify({ mode: "restricted", updatedAt: new Date().toISOString() }));
+            expect((await handleAuth(f.request("/sign-in/email", { email, password: PASSWORD }), f.env)).status).toBe(200);
+            const before = f.queries.length;
+            for (const path of ["/sign-up/email", "/request-password-reset", "/send-verification-email"]) {
+                const response = await handleAuth(f.request(path, { name: "Other", email, password: PASSWORD }), f.env);
+                expect(response.status, path).toBe(503);
+            }
+            expect(f.queries).toHaveLength(before);
+            expect(f.messages).toHaveLength(1);
+        } finally { f.database.close(); }
+    });
+
     it("blocks MFA secret exports and revokes pre-enrollment sessions while preserving backup-code login", async () => {
         const f = fixture();
         try {
@@ -201,6 +243,25 @@ describe("email authentication and admin MFA", () => {
         f.state.set("budget:state", JSON.stringify({ mode: "normal", updatedAt: new Date(Date.now() - 1_800_001).toISOString() }));
         await expect(sendAccountEmail(f.env, "a@example.com", "Verify", `${f.env.ORIGIN}/verify`)).rejects.toThrow("EMAIL_PAUSED");
         expect(f.messages).toHaveLength(0);
+    });
+
+    it.each([
+        { status: 429, payload: { allowed: true }, code: "QUOTA_UNAVAILABLE" },
+        { status: 200, payload: { allowed: false }, code: "QUOTA_UNAVAILABLE" },
+        { status: 200, payload: { allowed: true, duplicate: true }, code: "QUOTA_UNAVAILABLE" },
+        { status: 429, payload: { allowed: false, retryAfter: -1 }, code: "QUOTA_UNAVAILABLE" },
+        { status: 429, payload: { allowed: false, duplicate: true, retryAfter: 60 }, code: "EMAIL_QUOTA_EXCEEDED" },
+    ])("does not send email for inconsistent or denied quota responses %j", async ({ status, payload, code }) => {
+        const f = fixture();
+        try {
+            f.env.ENVIRONMENT = "production";
+            f.state.set("budget:state", JSON.stringify({ mode: "normal", updatedAt: new Date().toISOString() }));
+            const fetch = vi.fn(async () => Response.json(payload, { status }));
+            f.env.QUOTA = Object.assign({} as SupportEnv["QUOTA"], { getByName: () => ({ fetch }) });
+            await expect(sendAccountEmail(f.env, "a@example.com", "Verify", `${f.env.ORIGIN}/verify`)).rejects.toThrow(code);
+            expect(fetch).toHaveBeenCalledTimes(1);
+            expect(f.messages).toHaveLength(0);
+        } finally { f.database.close(); }
     });
 
     it("cleans only bounded batches of expired verification records", async () => {

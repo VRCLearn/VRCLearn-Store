@@ -23,7 +23,7 @@ describe("region-scoped HTML and sitemap", () => {
         fixture.database.prepare("INSERT INTO product_revisions(id,product_id,content_json,status,created_at,updated_at) VALUES(?,?,?,'published',?,?)").run(revision, productId, JSON.stringify(content), time, time);
         fixture.database.prepare("INSERT INTO publications(product_id,region,revision_id,media_token,active,updated_at,category,pricing,currency,price) VALUES(?,'cn',?,'ssr-fixture',1,?,'avatars','paid','USD',10)").run(productId, revision, time);
     });
-    afterEach(async () => { await Promise.all(pending.splice(0)); fixture.database.close(); vi.unstubAllGlobals(); });
+    afterEach(async () => { await Promise.all(pending.splice(0)); fixture.database.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
     const context = (request: Request) => Object.assign({} as EventContext<AppEnv, string, unknown>, { request, env: fixture.env, waitUntil: (promise: Promise<unknown>) => pending.push(promise) });
     it("returns searchable HTML, safe Markdown, JSON-LD and a nonce before JavaScript", async () => {
         const response = await detailPage(context(edgeRequest(`/zh-CN/products/${productId}`)), "product");
@@ -48,5 +48,31 @@ describe("region-scoped HTML and sitemap", () => {
         const international = await sitemapPage(context(edgeRequest("/sitemaps/en.xml", { country: "US" })));
         expect(await international.text()).not.toContain(productId);
         expect((await detailPage(context(new Request(`https://preview.pages.dev/en/products/${productId}`)), "product")).status).toBe(404);
+    });
+    it.each(["maintenance", "kv-failure"])("stops cached HTML and every sitemap before cache or database access on %s", async (failure) => {
+        expect((await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).status).toBe(200);
+        expect((await detailPage(context(edgeRequest(`/en/shops/${shopId}`)), "shop")).status).toBe(200);
+        expect((await sitemapPage(context(edgeRequest("/sitemaps/en.xml")))).status).toBe(200);
+        await Promise.all(pending.splice(0));
+        const cache = vi.spyOn(caches.default, "match");
+        const before = fixture.queries.length;
+        if (failure === "maintenance") fixture.state.set("budget:state", JSON.stringify({ mode: "maintenance", updatedAt: new Date().toISOString() }));
+        else vi.spyOn(fixture.env.STATE, "get").mockRejectedValue(new Error("KV unavailable"));
+        for (const method of ["GET", "HEAD"]) {
+            const responses = [
+                await detailPage(context(edgeRequest(`/en/products/${productId}`, { method })), "product"),
+                await detailPage(context(edgeRequest(`/en/shops/${shopId}`, { method })), "shop"),
+                await sitemapPage(context(edgeRequest("/sitemap.xml", { method }))),
+                await sitemapPage(context(edgeRequest("/sitemaps/en.xml", { method }))),
+            ];
+            for (const response of responses) {
+                expect(response.status).toBe(503);
+                expect(response.headers.get("Cache-Control")).toBe("no-store");
+                expect(response.headers.get("Retry-After")).toBe("60");
+                expect(await response.text()).not.toContain(productId);
+            }
+        }
+        expect(cache).not.toHaveBeenCalled();
+        expect(fixture.queries).toHaveLength(before);
     });
 });

@@ -127,8 +127,8 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
         const parts = path.split("/");
         const writing = !["GET", "HEAD"].includes(request.method);
         if (writing) secureOrigin(request, env);
-        if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "" });
         await mode(env);
+        if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "" });
         if (path === "me" && request.method === "GET") {
             try { return response({ user: await session(request, env) }); }
             catch (error) { if (error instanceof HttpError && error.status === 401) return response({ user: null }); throw error; }
