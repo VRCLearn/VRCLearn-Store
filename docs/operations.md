@@ -21,7 +21,7 @@
 
 部署前在配置中填写实际 CF_ACCOUNT_ID、CF_ZONE_ID，并在两个配置中填写相同的 D1、KV ID 和桶名。绑定类型由配置生成，修改配置后运行 `npm.cmd run types`。不要手改生成声明来掩盖配置错误。
 
-Pages secrets：`TURNSTILE_SECRET_KEY`，可选的缓存清理凭据。辅助 Worker secrets：`BETTER_AUTH_SECRET`（随机高熵，至少 32 字符）、`TURNSTILE_SECRET_KEY`、只读成本源 `CF_MONITOR_TOKEN`、仅可更新指定规则的 `CF_API_TOKEN`。发信域已启用不代表所有邮箱服务商投递已验证，仍需单独授权测试真实邮件。
+Pages secrets：`TURNSTILE_SECRET_KEY`，可选的缓存清理凭据。辅助 Worker secrets：`BETTER_AUTH_SECRET`（随机高熵，至少 32 字符）、`TURNSTILE_SECRET_KEY`、限定该账户 Billing Read 的 `CF_MONITOR_TOKEN`、限定目标 zone 的 WAF 规则读写 `CF_API_TOKEN`。规则 token 的资源范围是 zone，不能把代码内的指定规则检查当成 token 本身的规则级授权。发信域已启用不代表所有邮箱服务商投递已验证，仍需单独授权测试真实邮件。
 
 D1 按文件顺序应用 `0001_business.sql`、`0002_auth.sql`、`0003_revision_storage.sql`，然后部署依赖这些表和触发器的代码。第三个迁移先计量现有修订，再对新增或增长内容实施全站与店铺配额；已有内容超过配额时仍允许等量或减量替换。调整 `revision_storage_policy` 前核对实际容量和费用，不直接改写计量表。
 
@@ -40,9 +40,13 @@ D1 按文件顺序应用 `0001_business.sql`、`0002_auth.sql`、`0003_revision_
 
 每 15 分钟只执行一批监控与维护，不递归调度。上传与发布使用多层限额：用户、全站、每日／月度，以及 D1 原子维护的私有与公开对象合计 8 GiB 存储预留。R2 超时结果不明确时保留预留；24 小时后由有界维护核实并删除未引用对象，再释放预留。
 
-在 zone 中预先创建**禁用**的紧急 block 规则，表达式须精确匹配 `worker/monitor.ts` 的 `dynamicBlockExpression(ORIGIN)`，再填写 EDGE_RULESET_ID、EDGE_RULE_ID。监控只启用该规则，不创建或覆盖其他规则；启用失败保存 `edgeBlocked:false`，应用层维护仍生效。媒体域另保留可人工启用的紧急封锁规则，以控制 R2 操作风险。
+在同一 zone 的 `http_request_firewall_custom` 活跃入口规则集中预先创建两条**禁用**的紧急 block 规则：动态入口表达式精确匹配 `dynamicBlockExpression(ORIGIN)`，媒体表达式精确匹配 `mediaBlockExpression(MEDIA_ORIGIN)`。填写 EDGE_RULESET_ID、EDGE_RULE_ID、EDGE_MEDIA_RULE_ID，两个运行时的 MEDIA_ORIGIN 必须一致。紧急规则应置于可能跳过后续自定义规则的 skip 规则之前。
 
-达到维护模式后，静态首页仍可访问，动态入口返回暂停。恢复时必须先核对 Cloudflare 控制台的实际使用量、攻击状态和监控源，人工关闭边缘紧急规则并写入经核实的新 `budget:state`；不要清空 KV、伪造费用为零或部署自动开关循环。缺失或超过 30 分钟的状态不能开启生产高成本功能。
+监控先验证活跃入口的 ID、kind、phase 和对应规则表达式，只更新预配置规则的 `enabled:true`；一条写入失败不阻止另一条，再读取一次活跃入口核验，不自动重试写入。`edgeDynamicBlocked`、`edgeMediaBlocked` 分别记录核验结果，只有两者均确认生效才记录 `edgeBlocked:true`。KV 读取或持久化失败会强制尝试同样的双域封锁，不以 KV 可用为前提。缺失规则或无写权限仍需人工处理，不能把应用维护响应当作边缘请求已免费阻断。
+
+达到维护模式后，静态首页仍可访问，业务 API、详情、sitemap、认证和内部会话入口返回暂停；定时维护跳过媒体和认证清理，DO 仅继续有界排空账本。受限模式仍允许密码登录，但禁止账户发信和高成本业务。KV 读取失败时应用动态入口也拒绝继续执行。恢复时必须先核对 Cloudflare 控制台的实际使用量、攻击状态和监控源，人工关闭动态与媒体两条紧急规则并写入经核实的新 `budget:state`；不要清空 KV、伪造费用为零或部署自动开关循环。缺失、畸形、超过 30 分钟或明显来自未来的状态不能开启生产高成本功能。
+
+配额账本有到期索引和 100,000 条硬上限。每个获批操作最多清理 32 条，Alarm 每批最多清理 1,000 条；过期积压按最短 60 秒继续，正常时调度到最早到期，空账本停止 Alarm。容量不足和 Alarm 持久化失败均不放行操作；不要通过删除尚未到期的计数或重放记录恢复可用性。
 
 私有上传未附加到有效草稿／当前发布版超过 24 小时后可清理；未发布草稿 30 天不更新后视为过期，图片可能清理，重新编辑需补传。每次至多清理 25 个旧公开图片、25 个私有图片和 25 个孤立预留，并清理至多 100 条过期会话与验证记录。R2 删除失败不释放预留，后续批次重试。
 
