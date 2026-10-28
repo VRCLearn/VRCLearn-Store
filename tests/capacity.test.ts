@@ -15,6 +15,7 @@ describe("10,000-product indexed catalog", () => {
             const permission = db.prepare("INSERT INTO regional_permissions(id,shop_id,region,status,reason,updated_at) VALUES(?,?,'cn','approved','Capacity fixture',?)");
             const productInsert = db.prepare("INSERT INTO products(id,shop_id,current_revision_id,latest_revision_id,created_at,updated_at) VALUES(?,?,?,?,?,?)");
             const revisionInsert = db.prepare("INSERT INTO product_revisions(id,product_id,content_json,status,created_at,updated_at) VALUES(?,?,?,'published',?,?)");
+            const approval = db.prepare("INSERT INTO publication_requests(revision_id,region,status) VALUES(?,'cn','approved')");
             const publication = db.prepare("INSERT INTO publications(product_id,region,revision_id,media_token,active,updated_at,category,pricing,currency,price) VALUES(?,'cn',?,'capacity-fixture',1,?,'avatars','paid','USD',?)");
             const search = db.prepare("INSERT INTO product_search(product_id,tokens) VALUES(?,?)");
             db.exec("BEGIN");
@@ -30,6 +31,7 @@ describe("10,000-product indexed catalog", () => {
                     const content: ProductInput = { title: `星空 Avatar ${maker}-${item}`, language: "zh-CN", summary: "A VRChat avatar", description: "Original product", category: "avatars", tags: [], compatibleModels: [], platforms: ["pc"], pricing: "paid", price: item + 1, currency: "USD", purchaseUrl: "https://maker.example.com/product", mediaIds: [], r18: false };
                     productInsert.run(id, shopId, revision, revision, time, time);
                     revisionInsert.run(revision, id, JSON.stringify(content), time, time);
+                    approval.run(revision);
                     publication.run(id, revision, time, item + 1);
                     search.run(id, searchTokens(content.title).join(" "));
                 }

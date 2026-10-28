@@ -6,7 +6,7 @@ import { ActionButton, Busy, currentUser, Empty, Form, Markdown, Notice, Select,
 
 interface ReviewQueue {
     permissions: { id: string; shopId: string; shopName: string; region: Region; reason: string }[];
-    products: { id: string; productId: string; shopName: string; content: ProductInput; regions: { region: Region; status: string; reason: string }[] }[];
+    products: { id: string; productId: string; shopName: string; content: ProductInput; regions: { region: Region; status: string; reason: string }[]; canRetry: boolean }[];
     shops: { id: string; shopId: string; content: ShopInput }[];
     reports: { id: string; productId: string; reason: string; status: string }[];
 }
@@ -29,11 +29,12 @@ function QueueSection({ title, count, children }: { title: string; count: number
     return <Card className="panel"><div className="section-heading"><h2>{title}</h2><Badge value={count} label={`${title}: ${count}`} /></div>{count ? children : <Empty />}</Card>;
 }
 
-function RetryPublication({ id, regions, onDone }: { id: string; regions: ReviewQueue["products"][number]["regions"]; onDone: () => Promise<void> }) {
+function RetryPublication({ id, regions, canRetry, onDone }: { id: string; regions: ReviewQueue["products"][number]["regions"]; canRetry: boolean; onDone: () => Promise<void> }) {
     const { t } = useLocale();
     const action = useAction();
-    if (!regions.length || regions.some((region) => region.status !== "approved")) return null;
-    return <div className="review-decision"><Notice error={action.error} /><ActionButton busy={action.busy} variant="outlined" onClick={() => { void action.run(async () => { await send(`/admin/revisions/${encodeURIComponent(id)}/review`, "POST", { region: regions[0].region, approve: true, reason: "" }); await onDone(); }); }}>{t.retryPublish}</ActionButton></div>;
+    const approved = regions.find((region) => region.status === "approved");
+    if (!canRetry || !approved) return null;
+    return <div className="review-decision"><Notice error={action.error} /><ActionButton busy={action.busy} variant="outlined" onClick={() => { void action.run(async () => { await send(`/admin/revisions/${encodeURIComponent(id)}/review`, "POST", { region: approved.region, approve: true, reason: "" }); await onDone(); }); }}>{t.retryPublish}</ActionButton></div>;
 }
 
 function ProductReview({ content }: { content: ProductInput }) {
@@ -66,7 +67,7 @@ export function AdminPage() {
             <Tabs tabs={[{ value: "products", label: `${t.productsQueue} (${queue.products.length})` }, { value: "permissions", label: `${t.permissionsQueue} (${queue.permissions.length})` }, { value: "shops", label: `${t.shopsQueue} (${queue.shops.length})` }, { value: "reports", label: `${t.reportsQueue} (${queue.reports.length})` }]} value={section} onChange={setSection} />
             <div className="admin-layout"><div className="review-queues">
                 {section === "permissions" && <QueueSection title={t.permissionsQueue} count={queue.permissions.length}>{queue.permissions.map((application) => <Card role="article" className="review-item" key={application.id}><h3>{application.shopName} · {t[application.region]}</h3><small>{t.shopId}: {application.shopId}</small><p>{application.reason}</p><Decision endpoint={`/admin/permissions/${encodeURIComponent(application.id)}/review`} onDone={load} /></Card>)}</QueueSection>}
-                {section === "products" && <QueueSection title={t.productsQueue} count={queue.products.length}>{queue.products.map((submission) => <Card className="review-item" key={submission.id}><details className="review-details"><summary><strong>{submission.content.title}</strong><span>{submission.shopName} · {submission.regions.map((item) => `${t[item.region]} · ${statusLabel(t, item.status)}`).join(" / ")}</span></summary><small>{t.productId}: {submission.productId}</small><ProductReview content={submission.content} />{submission.regions.filter((item) => item.status === "pending").map((item) => <Decision key={item.region} endpoint={`/admin/revisions/${encodeURIComponent(submission.id)}/review`} region={item.region} onDone={load} />)}<RetryPublication id={submission.id} regions={submission.regions} onDone={load} /></details></Card>)}</QueueSection>}
+                {section === "products" && <QueueSection title={t.productsQueue} count={queue.products.length}>{queue.products.map((submission) => <Card className="review-item" key={submission.id}><details className="review-details"><summary><strong>{submission.content.title}</strong><span>{submission.shopName} · {submission.regions.map((item) => `${t[item.region]} · ${statusLabel(t, item.status)}`).join(" / ")}</span></summary><small>{t.productId}: {submission.productId}</small><ProductReview content={submission.content} />{submission.regions.filter((item) => item.status === "pending").map((item) => <Decision key={item.region} endpoint={`/admin/revisions/${encodeURIComponent(submission.id)}/review`} region={item.region} onDone={load} />)}<RetryPublication id={submission.id} regions={submission.regions} canRetry={submission.canRetry} onDone={load} /></details></Card>)}</QueueSection>}
                 {section === "shops" && <QueueSection title={t.shopsQueue} count={queue.shops.length}>{queue.shops.map((submission) => <Card role="article" className="review-item" key={submission.id}><h3>{submission.content.name}</h3><small>{t.shopId}: {submission.shopId}</small><p>{submission.content.description}</p><a href={submission.content.websiteUrl} target="_blank" rel="noopener noreferrer nofollow">{submission.content.websiteUrl}</a><Decision endpoint={`/admin/shops/${encodeURIComponent(submission.id)}/review`} onDone={load} /></Card>)}</QueueSection>}
                 {section === "reports" && <QueueSection title={t.reportsQueue} count={queue.reports.length}>{queue.reports.map((report) => <ReportItem key={report.id} report={report} onDone={load} />)}</QueueSection>}
             </div><aside><Moderation onDone={load} /></aside></div>

@@ -18,6 +18,7 @@ function fixture() {
         ...value.env,
         QUOTA: Object.assign({} as SupportEnv["QUOTA"], value.env.QUOTA),
         BETTER_AUTH_SECRET: "only-for-tests-24c41d71-e740-4542-ad8c-12d206952f17",
+        CF_MONITOR_TOKEN: "test-monitor-token", CF_API_TOKEN: "test-rule-token",
         AUTH_RATE_LIMIT: Object.assign({} as RateLimit, { limit: async () => ({ success: true }) }),
         EMAIL: Object.assign({} as SendEmail, { send: async (message: { text?: string }) => { messages.push(message); return { messageId: "test" }; } }),
         EMAIL_FROM: "noreply@vrclearn.com", ALERT_EMAIL: "", CF_ACCOUNT_ID: "", CF_ZONE_ID: "", EDGE_RULESET_ID: "", EDGE_RULE_ID: "", EDGE_MEDIA_RULE_ID: "",

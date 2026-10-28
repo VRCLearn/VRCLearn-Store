@@ -4,6 +4,7 @@ export type Category = "avatars" | "clothing" | "worlds" | "plugins" | "tools" |
 export interface SessionUser {
     id: string;
     email: string;
+    // Better Auth's name field is the public display name, not a username or login identifier.
     name: string;
     emailVerified: boolean;
     role: "user" | "admin";
@@ -61,6 +62,7 @@ export interface MerchantProduct {
     status: "draft" | "pending" | "rejected" | "published" | "withdrawn";
     publishedRegions: Region[];
     requestedRegions: Region[];
+    regionalReviews: { region: Region; status: "pending" | "approved" | "rejected"; reason: string }[];
     reviewReason?: string;
 }
 export interface Workspace {

@@ -18,7 +18,8 @@ interface PublicRow {
 
 const publicFrom = `FROM publications p
     JOIN products g ON g.id = p.product_id AND g.current_revision_id = p.revision_id
-    JOIN product_revisions r ON r.id = p.revision_id AND r.status = 'published'
+    JOIN product_revisions r ON r.id = p.revision_id AND r.status IN ('pending', 'published')
+    JOIN publication_requests approved ON approved.revision_id = p.revision_id AND approved.region = p.region AND approved.status = 'approved'
     JOIN shops s ON s.id = g.shop_id
     JOIN shop_revisions sr ON sr.id = s.current_revision_id AND sr.status = 'approved'
     JOIN regional_permissions perm ON perm.shop_id = s.id AND perm.region = p.region AND perm.status = 'approved'

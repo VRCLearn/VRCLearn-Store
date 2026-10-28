@@ -64,38 +64,45 @@ describe("publication races with real SQLite and reentrant R2", () => {
         expect(fixture.database.prepare("SELECT status, submission_token FROM product_revisions WHERE id = ?").get(product.revisionId)).toMatchObject({ status: "withdrawn", submission_token: null });
     });
     it("a stale submission cannot overwrite or erase a re-submitted region generation", async () => {
-        const { product } = await setup();
+        const { product, withImage } = await setup();
         await submit(product.id, ["cn"]);
         const oldToken = fixture.database.prepare("SELECT submission_token FROM product_revisions WHERE id = ?").get(product.revisionId)?.submission_token;
         const originalPut = fixture.env.PUBLIC_MEDIA.put.bind(fixture.env.PUBLIC_MEDIA);
         let interrupted = false;
+        let nextRevision = "";
         fixture.env.PUBLIC_MEDIA.put = vi.fn(async (...args: Parameters<R2Bucket["put"]>) => {
             const result = await originalPut(...args);
             if (!interrupted) {
                 interrupted = true;
                 expect((await api(`merchant/products/${product.id}/withdraw`, "POST")).status).toBe(200);
+                const saved = await api(`merchant/products/${product.id}`, "PUT", withImage);
+                expect(saved.status).toBe(200);
+                nextRevision = (saved.data as { revisionId: string }).revisionId;
                 await submit(product.id, ["intl"]);
-                await approve(product.revisionId, "intl");
+                await approve(nextRevision, "intl");
             }
             return result;
         });
         const result = await approve(product.revisionId, "cn");
         expect(result.data).toMatchObject({ published: false });
-        const publications = fixture.database.prepare("SELECT region, media_token FROM publications WHERE product_id = ? AND active = 1").all(product.id);
+        const publications = fixture.database.prepare("SELECT region, revision_id, media_token FROM publications WHERE product_id = ? AND active = 1").all(product.id);
         expect(publications).toHaveLength(1);
         expect(publications[0].region).toBe("intl");
+        expect(publications[0].revision_id).toBe(nextRevision);
+        expect(nextRevision).not.toBe(product.revisionId);
         expect(publications[0].media_token).not.toBe(oldToken);
+        expect(fixture.database.prepare("SELECT region, status FROM publication_requests WHERE revision_id = ?").all(product.revisionId)).toEqual([{ region: "cn", status: "approved" }]);
         expect([...fixture.publicMedia.keys()]).toHaveLength(1);
         expect([...fixture.publicMedia.keys()][0]).toContain(`/${publications[0].media_token}/`);
         expect([...fixture.publicMedia.keys()][0]).toMatch(/^intl\//);
         await expect(getProduct(edgeRequest("/", { country: "CN" }), fixture.env, product.id)).rejects.toMatchObject({ status: 404 });
     });
-    it("old-version cleanup retains another revision published during R2 deletion", async () => {
+    it.each([{ regions: ["cn"] }, { regions: ["cn", "intl"] }])("old-version cleanup retains another revision published during R2 deletion in $regions", async ({ regions }) => {
         const { product, withImage } = await setup();
-        await submit(product.id);
-        await approve(product.revisionId);
+        await submit(product.id, regions);
+        for (const region of regions) await approve(product.revisionId, region);
         const revised = (await api(`merchant/products/${product.id}`, "PUT", { ...withImage, title: "Version B" })).data as { revisionId: string };
-        await submit(product.id);
+        await submit(product.id, regions);
         const originalDelete = fixture.env.PUBLIC_MEDIA.delete.bind(fixture.env.PUBLIC_MEDIA);
         let interrupted = false;
         let thirdRevision = "";
@@ -104,18 +111,178 @@ describe("publication races with real SQLite and reentrant R2", () => {
                 interrupted = true;
                 const third = (await api(`merchant/products/${product.id}`, "PUT", { ...withImage, title: "Version C" })).data as { revisionId: string };
                 thirdRevision = third.revisionId;
-                await submit(product.id);
-                await approve(third.revisionId);
+                await submit(product.id, regions);
+                for (const region of regions) await approve(third.revisionId, region);
             }
             return originalDelete(keys);
         });
-        await approve(revised.revisionId);
+        for (const region of regions) await approve(revised.revisionId, region);
         const current = await getProduct(edgeRequest("/"), fixture.env, product.id);
         expect(current.title).toBe("Version C");
-        expect([...fixture.publicMedia.keys()]).toHaveLength(1);
-        expect([...fixture.publicMedia.keys()][0]).toContain(`/${thirdRevision}/`);
+        expect([...fixture.publicMedia.keys()]).toHaveLength(regions.length);
+        for (const key of fixture.publicMedia.keys()) expect(key).toContain(`/${thirdRevision}/`);
         const keys = fixture.database.prepare("SELECT object_key FROM public_media").all().map((row) => row.object_key);
-        expect(keys).toEqual([...fixture.publicMedia.keys()]);
+        expect(keys.sort()).toEqual([...fixture.publicMedia.keys()].sort());
+    });
+    it("concurrent first approvals converge without deleting either region's active media", async () => {
+        const { product } = await setup();
+        await submit(product.id, ["cn", "intl"]);
+        const originalPut = fixture.env.PUBLIC_MEDIA.put.bind(fixture.env.PUBLIC_MEDIA);
+        let interrupted = false;
+        fixture.env.PUBLIC_MEDIA.put = vi.fn(async (...args: Parameters<R2Bucket["put"]>) => {
+            const result = await originalPut(...args);
+            if (!interrupted) {
+                interrupted = true;
+                await approve(product.revisionId, "intl");
+            }
+            return result;
+        });
+        await approve(product.revisionId, "cn");
+        for (const country of ["CN", "JP"]) expect((await getProduct(edgeRequest("/", { country }), fixture.env, product.id)).title).toBe(content.title);
+        const rows = fixture.database.prepare("SELECT region, revision_id, media_token FROM publications WHERE product_id = ? AND active = 1 ORDER BY region").all(product.id);
+        expect(rows).toHaveLength(2);
+        expect(rows.map((row) => row.region)).toEqual(["cn", "intl"]);
+        expect(rows.every((row) => row.revision_id === product.revisionId)).toBe(true);
+        expect(fixture.publicMedia.size).toBe(2);
+        const keys = fixture.database.prepare("SELECT object_key FROM public_media WHERE product_id = ?").all(product.id).map((row) => String(row.object_key));
+        expect(keys.sort()).toEqual([...fixture.publicMedia.keys()].sort());
+        expect(fixture.database.prepare("SELECT bytes FROM media_storage_total WHERE id = 1").get()?.bytes).toBe(66);
+        expect(fixture.database.prepare("SELECT COUNT(*) AS n FROM product_search WHERE product_id = ?").get(product.id)?.n).toBe(1);
+    });
+    it.each([false, true])("an Intl rejection during CN media staging does not cancel an independent CN publication (existing=%s)", async (existing) => {
+        const { product, withImage } = await setup();
+        let revisionId = product.revisionId;
+        if (existing) {
+            await submit(product.id);
+            await approve(product.revisionId);
+            revisionId = ((await api(`merchant/products/${product.id}`, "PUT", { ...withImage, title: "Version B" })).data as { revisionId: string }).revisionId;
+        }
+        await submit(product.id, ["cn", "intl"]);
+        const originalPut = fixture.env.PUBLIC_MEDIA.put.bind(fixture.env.PUBLIC_MEDIA);
+        let interrupted = false;
+        fixture.env.PUBLIC_MEDIA.put = vi.fn(async (...args: Parameters<R2Bucket["put"]>) => {
+            const result = await originalPut(...args);
+            if (!interrupted) {
+                interrupted = true;
+                expect((await api(`admin/revisions/${revisionId}/review`, "POST", { region: "intl", approve: false, reason: "Not approved for Intl" }, "admin")).status).toBe(200);
+            }
+            return result;
+        });
+        await approve(revisionId, "cn");
+        expect((await getProduct(edgeRequest("/", { country: "CN" }), fixture.env, product.id)).title).toBe(existing ? "Version B" : content.title);
+        await expect(getProduct(edgeRequest("/", { country: "JP" }), fixture.env, product.id)).rejects.toMatchObject({ status: 404 });
+        expect([...fixture.publicMedia.keys()]).toHaveLength(1);
+        expect([...fixture.publicMedia.keys()][0]).toMatch(/^cn\//);
+        expect([...fixture.publicMedia.keys()][0]).toContain(`/${revisionId}/`);
+    });
+    it("adds same-content regional media with a new token while retaining the existing region's object", async () => {
+        const { product } = await setup();
+        await submit(product.id);
+        await approve(product.revisionId);
+        const cnBefore = fixture.database.prepare("SELECT revision_id, media_token FROM publications WHERE product_id = ? AND region = 'cn'").get(product.id)!;
+        const cnKey = [...fixture.publicMedia.keys()][0];
+        await submit(product.id, ["intl"]);
+        await approve(product.revisionId, "intl");
+        expect(fixture.database.prepare("SELECT COUNT(*) AS n FROM product_revisions WHERE product_id = ?").get(product.id)?.n).toBe(1);
+        expect(fixture.database.prepare("SELECT revision_id, media_token FROM publications WHERE product_id = ? AND region = 'cn'").get(product.id)).toEqual(cnBefore);
+        const intl = fixture.database.prepare("SELECT revision_id, media_token FROM publications WHERE product_id = ? AND region = 'intl'").get(product.id)!;
+        expect(intl.revision_id).toBe(product.revisionId);
+        expect(intl.media_token).not.toBe(cnBefore.media_token);
+        expect(fixture.publicMedia.has(cnKey)).toBe(true);
+        expect([...fixture.publicMedia.keys()].filter((key) => key.startsWith("cn/"))).toEqual([cnKey]);
+        expect([...fixture.publicMedia.keys()].filter((key) => key.startsWith("intl/"))).toHaveLength(1);
+        expect(fixture.database.prepare("SELECT bytes FROM media_storage_total WHERE id = 1").get()?.bytes).toBe(66);
+    });
+    it("rejects a delayed same-content submission after another request has already published its additional region", async () => {
+        const { product } = await setup();
+        await submit(product.id);
+        await approve(product.revisionId);
+        let interrupted = false;
+        let completedRevision: unknown;
+        let completedDecisions: unknown;
+        let completedPublications: unknown;
+        vi.stubGlobal("fetch", vi.fn(async () => {
+            if (!interrupted) {
+                interrupted = true;
+                await submit(product.id, ["intl"]);
+                await approve(product.revisionId, "intl");
+                completedRevision = fixture.database.prepare("SELECT status, submission_token FROM product_revisions WHERE id = ?").get(product.revisionId);
+                completedDecisions = fixture.database.prepare("SELECT region, status, reason FROM publication_requests WHERE revision_id = ? ORDER BY region").all(product.revisionId);
+                completedPublications = fixture.database.prepare("SELECT region, revision_id, media_token FROM publications WHERE product_id = ? AND active = 1 ORDER BY region").all(product.id);
+            }
+            return Response.json({ success: true, hostname: "store.vrclearn.com", action: "submit" });
+        }));
+        const delayed = await api(`merchant/products/${product.id}/submit`, "POST", { regions: ["intl"], turnstileToken: "delayed-proof" });
+        expect(interrupted).toBe(true);
+        expect(delayed.status).toBe(409);
+        expect(delayed.data).toMatchObject({ error: { code: "REVISION_CONFLICT" } });
+        expect(completedRevision).toMatchObject({ status: "published" });
+        expect(fixture.database.prepare("SELECT status, submission_token FROM product_revisions WHERE id = ?").get(product.revisionId)).toEqual(completedRevision);
+        expect(fixture.database.prepare("SELECT region, status, reason FROM publication_requests WHERE revision_id = ? ORDER BY region").all(product.revisionId)).toEqual(completedDecisions);
+        expect(completedDecisions).toEqual([{ region: "cn", status: "approved", reason: "" }, { region: "intl", status: "approved", reason: "" }]);
+        expect(fixture.database.prepare("SELECT region, revision_id, media_token FROM publications WHERE product_id = ? AND active = 1 ORDER BY region").all(product.id)).toEqual(completedPublications);
+        expect(fixture.publicMedia.size).toBe(2);
+        for (const country of ["CN", "JP"]) expect((await getProduct(edgeRequest("/", { country }), fixture.env, product.id)).title).toBe(content.title);
+    });
+    it.each(["withdraw", "unpublish", "revoke"])("a concurrent partial %s preserves CN media and prevents the Intl finalizer from reviving", async (operation) => {
+        const { shop, product } = await setup();
+        await submit(product.id, ["cn", "intl"]);
+        await approve(product.revisionId, "cn");
+        const cnKey = [...fixture.publicMedia.keys()][0];
+        const cnBefore = fixture.database.prepare("SELECT revision_id, media_token FROM publications WHERE product_id = ? AND region = 'cn'").get(product.id)!;
+        const originalPut = fixture.env.PUBLIC_MEDIA.put.bind(fixture.env.PUBLIC_MEDIA);
+        let interrupted = false;
+        fixture.env.PUBLIC_MEDIA.put = vi.fn(async (...args: Parameters<R2Bucket["put"]>) => {
+            const result = await originalPut(...args);
+            if (!interrupted) {
+                interrupted = true;
+                const cancellation = operation === "withdraw"
+                    ? await api(`merchant/products/${product.id}/withdraw`, "POST")
+                    : operation === "unpublish"
+                        ? await api(`merchant/products/${product.id}/unpublish`, "POST", { region: "intl" })
+                        : await api(`admin/shops/${shop.id}/revoke`, "POST", { region: "intl", reason: "Stop Intl publication" }, "admin");
+                expect(cancellation.status).toBe(200);
+            }
+            return result;
+        });
+        const result = await approve(product.revisionId, "intl");
+        expect(result.data).toMatchObject({ published: false });
+        expect((await getProduct(edgeRequest("/", { country: "CN" }), fixture.env, product.id)).title).toBe(content.title);
+        await expect(getProduct(edgeRequest("/", { country: "JP" }), fixture.env, product.id)).rejects.toMatchObject({ status: 404 });
+        expect(fixture.database.prepare("SELECT revision_id, media_token FROM publications WHERE product_id = ? AND region = 'cn'").get(product.id)).toEqual(cnBefore);
+        expect([...fixture.publicMedia.keys()]).toEqual([cnKey]);
+        expect(fixture.database.prepare("SELECT object_key FROM public_media WHERE product_id = ?").all(product.id)).toEqual([{ object_key: cnKey }]);
+        expect(fixture.database.prepare("SELECT submission_token FROM product_revisions WHERE id = ?").get(product.revisionId)?.submission_token).toBeNull();
+        expect(fixture.database.prepare("SELECT bytes FROM media_storage_total WHERE id = 1").get()?.bytes).toBe(33);
+    });
+    it.each(["unpublish", "revoke"])("cancelling a live CN region through %s during a replacement keeps the old Intl publication", async (operation) => {
+        const { shop, product, withImage } = await setup();
+        await submit(product.id, ["cn", "intl"]);
+        await approve(product.revisionId, "cn");
+        await approve(product.revisionId, "intl");
+        const intlBefore = fixture.database.prepare("SELECT revision_id, media_token FROM publications WHERE product_id = ? AND region = 'intl'").get(product.id)!;
+        const intlKey = [...fixture.publicMedia.keys()].find((key) => key.startsWith("intl/"))!;
+        const revised = (await api(`merchant/products/${product.id}`, "PUT", { ...withImage, title: "Version B" })).data as { revisionId: string };
+        await submit(product.id, ["cn", "intl"]);
+        await approve(revised.revisionId, "cn");
+        const originalPut = fixture.env.PUBLIC_MEDIA.put.bind(fixture.env.PUBLIC_MEDIA);
+        let interrupted = false;
+        fixture.env.PUBLIC_MEDIA.put = vi.fn(async (...args: Parameters<R2Bucket["put"]>) => {
+            const result = await originalPut(...args);
+            if (!interrupted) {
+                interrupted = true;
+                const cancellation = operation === "unpublish"
+                    ? await api(`merchant/products/${product.id}/unpublish`, "POST", { region: "cn" })
+                    : await api(`admin/shops/${shop.id}/revoke`, "POST", { region: "cn", reason: "Stop CN publication" }, "admin");
+                expect(cancellation.status).toBe(200);
+            }
+            return result;
+        });
+        expect((await approve(revised.revisionId, "intl")).data).toMatchObject({ published: false });
+        await expect(getProduct(edgeRequest("/", { country: "CN" }), fixture.env, product.id)).rejects.toMatchObject({ status: 404 });
+        expect((await getProduct(edgeRequest("/", { country: "JP" }), fixture.env, product.id)).title).toBe(content.title);
+        expect(fixture.database.prepare("SELECT revision_id, media_token FROM publications WHERE product_id = ? AND region = 'intl'").get(product.id)).toEqual(intlBefore);
+        expect([...fixture.publicMedia.keys()]).toEqual([intlKey]);
     });
     it("reserves combined storage atomically and releases only recorded object bytes", async () => {
         fixture.database.prepare("UPDATE media_storage_total SET bytes = ? WHERE id = 1").run(8589934592 - 100);
@@ -142,6 +309,23 @@ describe("publication races with real SQLite and reentrant R2", () => {
         const retried = await approve(product.revisionId);
         expect(retried.data).toMatchObject({ published: true });
         expect(fixture.publicMedia.size).toBe(1);
+    });
+    it("can retry an approved CN publication after media failure while Intl is still pending", async () => {
+        const { product } = await setup();
+        await submit(product.id, ["cn", "intl"]);
+        fixture.database.prepare("UPDATE media_storage_total SET bytes = ? WHERE id = 1").run(8589934592 - 1);
+        expect((await api(`admin/revisions/${product.revisionId}/review`, "POST", { region: "cn", approve: true }, "admin")).status).toBe(429);
+        const queue = (await api("admin/queue", "GET", undefined, "admin")).data as { products: { id: string; canRetry: boolean }[] };
+        expect(queue.products.find((item) => item.id === product.revisionId)).toMatchObject({ canRetry: true });
+        expect(fixture.database.prepare("SELECT region, status FROM publication_requests WHERE revision_id = ? ORDER BY region").all(product.revisionId)).toEqual([
+            { region: "cn", status: "approved" }, { region: "intl", status: "pending" },
+        ]);
+        fixture.database.prepare("UPDATE media_storage_total SET bytes = 0 WHERE id = 1").run();
+        expect((await approve(product.revisionId, "cn")).data).toMatchObject({ published: true });
+        expect((await getProduct(edgeRequest("/", { country: "CN" }), fixture.env, product.id)).title).toBe(content.title);
+        await expect(getProduct(edgeRequest("/", { country: "JP" }), fixture.env, product.id)).rejects.toMatchObject({ status: 404 });
+        expect([...fixture.publicMedia.keys()]).toHaveLength(1);
+        expect([...fixture.publicMedia.keys()][0]).toMatch(/^cn\//);
     });
     it("the 200-product allowance remains enforced when the preflight count is stale", async () => {
         const { shop } = await setup();

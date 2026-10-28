@@ -21,6 +21,7 @@ describe("region-scoped HTML and sitemap", () => {
         fixture.database.prepare("INSERT INTO regional_permissions(id,shop_id,region,status,reason,updated_at) VALUES(?,?,'cn','approved','Original works',?)").run(crypto.randomUUID(), shopId, time);
         fixture.database.prepare("INSERT INTO products(id,shop_id,current_revision_id,latest_revision_id,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(productId, shopId, revision, revision, time, time);
         fixture.database.prepare("INSERT INTO product_revisions(id,product_id,content_json,status,created_at,updated_at) VALUES(?,?,?,'published',?,?)").run(revision, productId, JSON.stringify(content), time, time);
+        fixture.database.prepare("INSERT INTO publication_requests(revision_id,region,status) VALUES(?,'cn','approved')").run(revision);
         fixture.database.prepare("INSERT INTO publications(product_id,region,revision_id,media_token,active,updated_at,category,pricing,currency,price) VALUES(?,'cn',?,'ssr-fixture',1,?,'avatars','paid','USD',10)").run(productId, revision, time);
     });
     afterEach(async () => { await Promise.all(pending.splice(0)); fixture.database.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
@@ -48,6 +49,20 @@ describe("region-scoped HTML and sitemap", () => {
         const international = await sitemapPage(context(edgeRequest("/sitemaps/en.xml", { country: "US" })));
         expect(await international.text()).not.toContain(productId);
         expect((await detailPage(context(new Request(`https://preview.pages.dev/en/products/${productId}`)), "product")).status).toBe(404);
+    });
+    it.each(["pending", "rejected", "missing"])("serves only the approved region of a pending snapshot when the other regional decision is %s", async (status) => {
+        const revision = fixture.database.prepare("SELECT current_revision_id FROM products WHERE id = ?").get(productId)?.current_revision_id;
+        fixture.database.prepare("UPDATE product_revisions SET status = 'pending' WHERE id = ?").run(revision!);
+        fixture.database.prepare("INSERT INTO regional_permissions(id,shop_id,region,status,reason,updated_at) VALUES(?,?,'intl','approved','Original works',?)").run(crypto.randomUUID(), shopId, new Date().toISOString());
+        // Even an active projection must not bypass this region's review decision.
+        fixture.database.prepare("INSERT INTO publications(product_id,region,revision_id,media_token,active,updated_at,category,pricing,currency,price) VALUES(?,'intl',?,'unapproved-fixture',1,?,'avatars','paid','USD',10)").run(productId, revision!, new Date().toISOString());
+        if (status !== "missing") fixture.database.prepare("INSERT INTO publication_requests(revision_id,region,status) VALUES(?,'intl',?)").run(revision!, status);
+        const cnDetail = await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product");
+        expect(cnDetail.status).toBe(200);
+        expect(await cnDetail.text()).toContain("<h1>星空 Avatar</h1>");
+        expect(await (await sitemapPage(context(edgeRequest("/sitemaps/en.xml")))).text()).toContain(productId);
+        expect((await detailPage(context(edgeRequest(`/en/products/${productId}`, { country: "JP" })), "product")).status).toBe(404);
+        expect(await (await sitemapPage(context(edgeRequest("/sitemaps/en.xml", { country: "JP" })))).text()).not.toContain(productId);
     });
     it.each(["maintenance", "kv-failure"])("stops cached HTML and every sitemap before cache or database access on %s", async (failure) => {
         expect((await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).status).toBe(200);

@@ -26,7 +26,7 @@ export function localizedError(error: unknown, t: Record<MessageKey, string>): s
         REVISION_STORAGE_QUOTA_EXCEEDED: "actionUnavailable",
         DUPLICATE_OPERATION: "duplicateAction", REVISION_CONFLICT: "refreshRequired", REVIEW_CONFLICT: "refreshRequired",
         REGION_PERMISSION_REQUIRED: "permissionRequired", SHOP_REVIEW_REQUIRED: "shopApprovalRequired",
-        ALL_REGIONS_REQUIRED: "allRegionsRequired", WITHDRAW_REQUIRED: "pendingImmutable",
+        ALL_REGIONS_REQUIRED: "allRegionsRequired", WITHDRAW_REQUIRED: "pendingImmutable", REVISION_REQUIRED: "saveBeforeSubmit",
         VERIFICATION_REQUIRED: "turnstileWait", VERIFICATION_FAILED: "verificationExpired", CHALLENGE_FAILED: "verificationExpired",
         SERVICE_PAUSED: "actionUnavailable", FEATURE_PAUSED: "actionUnavailable",
         AUTH_UNAVAILABLE: "noApi", SERVICE_UNAVAILABLE: "noApi", NETWORK_UNAVAILABLE: "networkUnavailable",
