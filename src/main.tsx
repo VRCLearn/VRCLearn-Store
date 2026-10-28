@@ -91,7 +91,6 @@ function HomePage() {
                 <p className="eyebrow">VRChat · VRCLearn Store</p>
                 <h1>{t.tagline}</h1><p>{t.intro}</p>
                 <LinkButton href={path("/search")} icon="search">{t.browse}</LinkButton>
-                <span className="hero-footnote">{t.noR18}</span>
             </div>
             <div className="hero-art" aria-hidden="true">
                 <div className="hero-orbit orbit-one" /><div className="hero-orbit orbit-two" />

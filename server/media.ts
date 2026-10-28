@@ -87,6 +87,7 @@ export async function ownedMedia(env: AppEnv, productId: string, shopId: string,
 }
 
 export async function publishMedia(env: AppEnv, productId: string, revisionId: string, submissionToken: string, shopId: string, content: ProductInput, regions: Region[]): Promise<void> {
+    if (content.r18 && regions.includes("cn")) throw new HttpError(400, "ADULT_CN_FORBIDDEN", "Adult products cannot be published in China mainland.");
     const media = await ownedMedia(env, productId, shopId, content.mediaIds);
     for (const item of media) {
         const object = await env.PRIVATE_MEDIA.get(item.private_key);

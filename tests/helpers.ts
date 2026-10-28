@@ -57,8 +57,8 @@ export function sqliteD1(database = new DatabaseSync(":memory:")) {
     return { binding, database, queries };
 }
 
-export const merchant: SessionUser = { id: "merchant-one", email: "merchant@example.com", name: "Maker", role: "user", emailVerified: true, banned: false, twoFactorEnabled: false, twoFactorVerified: false };
-export const admin: SessionUser = { id: "admin-one", email: "admin@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false, twoFactorEnabled: true, twoFactorVerified: true };
+export const merchant: SessionUser = { id: "merchant-one", email: "merchant@example.com", name: "Maker", role: "user", emailVerified: true, banned: false };
+export const admin: SessionUser = { id: "admin-one", email: "admin@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false };
 
 export function testEnvironment() {
     const sql = sqliteD1();

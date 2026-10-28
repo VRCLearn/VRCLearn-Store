@@ -7,6 +7,5 @@ export async function cleanupExpiredAuth(env: SupportEnv, now = Date.now()): Pro
     await env.DB.batch([
         env.DB.prepare("DELETE FROM auth_verification WHERE id IN (SELECT id FROM auth_verification WHERE expiresAt < ? ORDER BY expiresAt LIMIT 100)").bind(cutoff),
         env.DB.prepare("DELETE FROM auth_session WHERE id IN (SELECT id FROM auth_session WHERE expiresAt < ? ORDER BY expiresAt LIMIT 100)").bind(cutoff),
-        env.DB.prepare("DELETE FROM auth_mfa_sessions WHERE session_id IN (SELECT session_id FROM auth_mfa_sessions WHERE expires_at < ? ORDER BY expires_at LIMIT 100)").bind(now),
     ]);
 }

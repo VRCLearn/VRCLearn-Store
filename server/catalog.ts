@@ -25,7 +25,8 @@ const publicFrom = `FROM publications p
     JOIN regional_permissions perm ON perm.shop_id = s.id AND perm.region = p.region AND perm.status = 'approved'
     LEFT JOIN user_profiles owner ON owner.user_id = s.owner_user_id`;
 const publicColumns = `g.id, g.shop_id, p.revision_id, p.media_token, r.content_json, sr.content_json AS shop_json, p.updated_at`;
-const publicWhere = `p.region = ? AND p.active = 1 AND COALESCE(owner.banned, 0) = 0`;
+const publicWhere = `p.region = ? AND p.active = 1 AND COALESCE(owner.banned, 0) = 0
+    AND (p.region != 'cn' OR COALESCE(json_extract(r.content_json, '$.r18'), 0) = 0)`;
 
 export function toProduct(row: PublicRow, region: Region, env: AppEnv): Product {
     const content = JSON.parse(row.content_json) as ProductInput;

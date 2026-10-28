@@ -1,5 +1,4 @@
 import { betterAuth } from "better-auth";
-import { twoFactor } from "better-auth/plugins";
 import type { SessionUser } from "../shared/contracts";
 import type { SupportEnv } from "./env";
 import { sendAccountEmail, reserve, accountEmailsEnabled } from "./email";
@@ -44,11 +43,6 @@ function buildAuth(env: SupportEnv) {
             defaultCookieAttributes: { httpOnly: true, sameSite: "lax", secure: env.ENVIRONMENT === "production" },
             ipAddress: { ipAddressHeaders: ["cf-connecting-ip"] },
         },
-        plugins: [twoFactor({
-            issuer: "VRCLearn Store",
-            skipVerificationOnEnable: false,
-            schema: { twoFactor: { modelName: "auth_two_factor" } },
-        })],
     });
 }
 
@@ -70,8 +64,6 @@ export async function getSessionUser(auth: Auth, env: SupportEnv, headers: Heade
     const result = await auth.api.getSession({ headers });
     if (!result) return null;
     const profile = await env.DB.prepare("SELECT role,banned FROM user_profiles WHERE user_id = ?").bind(result.user.id).first<UserProfile>();
-    const proof = await env.DB.prepare("SELECT session_id FROM auth_mfa_sessions WHERE session_id = ? AND expires_at > ?")
-        .bind(result.session.id, Date.now()).first<{ session_id: string }>();
     return {
         id: result.user.id,
         email: result.user.email,
@@ -79,17 +71,13 @@ export async function getSessionUser(auth: Auth, env: SupportEnv, headers: Heade
         emailVerified: result.user.emailVerified,
         role: profile?.role === "admin" ? "admin" : "user",
         banned: Boolean(profile?.banned),
-        twoFactorEnabled: Boolean(result.user.twoFactorEnabled),
-        twoFactorVerified: Boolean(result.user.twoFactorEnabled && proof),
     };
 }
 
 const TOKEN_PATHS = new Set(["/sign-up/email", "/sign-in/email", "/request-password-reset", "/send-verification-email"]);
-const MFA_PATHS = new Set(["/two-factor/verify-totp", "/two-factor/verify-backup-code"]);
 const AUTH_PATHS = new Set([
-    ...TOKEN_PATHS, ...MFA_PATHS, "/verify-email", "/reset-password", "/get-session", "/sign-out",
+    ...TOKEN_PATHS, "/verify-email", "/reset-password", "/get-session", "/sign-out",
     "/list-sessions", "/revoke-session", "/revoke-sessions", "/revoke-other-sessions", "/change-password", "/update-user",
-    "/two-factor/enable", "/two-factor/disable",
 ]);
 
 export async function verifyTurnstile(env: SupportEnv, request: Request, token: unknown): Promise<boolean> {
@@ -144,46 +132,13 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
                 if (!limit.allowed) return authFailure("RATE_LIMITED", "Please try again later", 429, limit.retryAfter);
             }
         }
-        // Admin sessions must prove MFA on this session; no trusted-device shortcut.
-        if (MFA_PATHS.has(path)) { data.trustDevice = false; data.disableSession = false; }
         const headers = new Headers(request.headers);
         headers.set("Content-Type", "application/json");
         headers.delete("Content-Length");
         forwarded = new Request(request.url, { method: "POST", headers, body: JSON.stringify(data) });
     }
     const auth = createAuth(env);
-    if (path === "/two-factor/disable") {
-        const current = await getSessionUser(auth, env, request.headers);
-        if (current?.role === "admin") return authFailure("ADMIN_MFA_REQUIRED", "Administrators cannot disable MFA", 403);
-    }
-    const beforeVerification = MFA_PATHS.has(path) ? await auth.api.getSession({ headers: request.headers }) : null;
     const result = await auth.handler(forwarded);
-    if (result.ok && MFA_PATHS.has(path)) {
-        const cookies = new Map<string, string>();
-        for (const part of (request.headers.get("cookie") ?? "").split(";")) {
-            const index = part.indexOf("=");
-            if (index > 0) cookies.set(part.slice(0, index).trim(), part.slice(index + 1));
-        }
-        for (const part of result.headers.getSetCookie()) {
-            const first = part.split(";")[0];
-            const index = first.indexOf("=");
-            if (index > 0) cookies.set(first.slice(0, index).trim(), first.slice(index + 1));
-        }
-        const proofHeaders = new Headers(request.headers);
-        proofHeaders.set("cookie", Array.from(cookies, ([key, value]) => `${key}=${value}`).join("; "));
-        const session = await auth.api.getSession({ headers: proofHeaders });
-        if (session?.user.twoFactorEnabled) {
-            const statements: D1PreparedStatement[] = [];
-            // MFA activation invalidates sessions established with only a password.
-            // Later challenge logins leave other MFA-verified sessions intact.
-            if (beforeVerification && !beforeVerification.user.twoFactorEnabled && beforeVerification.user.id === session.user.id) {
-                statements.push(env.DB.prepare("DELETE FROM auth_session WHERE userId = ? AND id != ?").bind(session.user.id, session.session.id));
-            }
-            statements.push(env.DB.prepare("INSERT INTO auth_mfa_sessions(session_id,user_id,expires_at) VALUES(?,?,?) ON CONFLICT(session_id) DO UPDATE SET expires_at=excluded.expires_at")
-                .bind(session.session.id, session.user.id, new Date(session.session.expiresAt).getTime()));
-            await env.DB.batch(statements);
-        }
-    }
     const headers = new Headers(result.headers);
     headers.set("Cache-Control", "no-store");
     return new Response(result.body, { status: result.status, headers });

@@ -70,10 +70,11 @@ describe("search input and content contract", () => {
         expect(ftsQuery("\"*()")).toBe("");
         expect(ftsQuery("word ".repeat(100)).length).toBeLessThan(300);
     });
-    it("rejects R18 and arbitrary content fields", () => {
+    it("accepts explicit adult classification and rejects malformed or arbitrary content fields", () => {
         const product = { title: "Test", language: "en", summary: "Summary", description: "Description", category: "avatars", tags: [], compatibleModels: [], platforms: ["pc"], pricing: "paid", price: 10, currency: "USD", purchaseUrl: "https://example.com/product", mediaIds: [], r18: false };
         expect(productSchema.safeParse(product).success).toBe(true);
-        expect(productSchema.safeParse({ ...product, r18: true }).success).toBe(false);
+        expect(productSchema.safeParse({ ...product, r18: true }).success).toBe(true);
+        expect(productSchema.safeParse({ ...product, r18: "true" }).success).toBe(false);
         expect(productSchema.safeParse({ ...product, ownerId: "someone-else" }).success).toBe(false);
         expect(productSchema.safeParse({ ...product, currency: null }).success).toBe(false);
         expect(productSchema.safeParse({ ...product, price: -1 }).success).toBe(false);

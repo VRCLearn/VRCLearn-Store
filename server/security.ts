@@ -84,8 +84,8 @@ export async function session(request: Request, env: AppEnv, admin = false): Pro
     const user = payload && "user" in payload ? payload.user : payload;
     if (!user || !user.emailVerified) throw new HttpError(401, "SIGN_IN_REQUIRED", "Sign in with a verified email address.");
     if (user.banned) throw new HttpError(403, "ACCOUNT_RESTRICTED", "This account is restricted.");
-    if (admin && (user.role !== "admin" || !user.twoFactorEnabled || !user.twoFactorVerified)) {
-        throw new HttpError(403, "ADMIN_MFA_REQUIRED", "An administrator session verified with MFA is required.");
+    if (admin && user.role !== "admin") {
+        throw new HttpError(403, "ADMIN_REQUIRED", "An administrator account is required.");
     }
     return user;
 }
