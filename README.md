@@ -4,6 +4,8 @@
 
 项目只允许内部测试环境发布，生产环境未开通。源代码和环境清单保留 `test` 与 `main` 的结构；合并到 `main` 不会创建或发布生产资源。线上状态须通过实际部署和验收记录确认，不能由配置文件推断。
 
+内部测试站：[test-store.vrclearn.com](https://test-store.vrclearn.com/zh-CN)。站点与媒体使用 Cloudflare Access，允许 `@vrclearn.com` 身份访问；商店账户另行注册，密码由使用者自行保存。旧生产、旧测试及旧账户预算监控已退役，新测试库和媒体从空状态初始化。
+
 ## 本地运行
 
 使用 Node.js 24 和锁文件安装依赖：
