@@ -16,7 +16,7 @@
 | 公开 R2 | `vrclearn-store-public` | `test-vrclearn-store-public` |
 | KV | `VRCLearn Store State`（保留原名称） | `test-vrclearn-store-state` |
 
-D1、两个 R2 桶、KV、辅助 Worker、配额 Durable Object 命名空间、认证限流命名空间、认证 Secret、Turnstile 和 Access 应用分别独立。测试不复制生产账户、会话、媒体或认证秘密。Cookie 按主机限定；测试邮件使用独立发件地址及明确测试标识，可发送给所有注册邮箱，仍受验证、限流和配额约束。两套的 `ENVIRONMENT` 均为 `production`，安全逻辑一致；`DEPLOYMENT_ENV=production|test` 仅用于确认部署身份。
+D1、两个 R2 桶、KV、辅助 Worker、配额 Durable Object 命名空间、认证限流命名空间、认证 Secret、Turnstile 和 Access 应用分别独立。内测数据可经明确授权从生产候选初始化，复制范围为账户、密码哈希、业务记录和媒体，排除全部会话、一次性验证记录及认证秘密；媒体必须落到独立测试桶。Cookie 按主机限定；测试邮件使用独立发件地址及明确测试标识，可发送给所有注册邮箱，仍受验证、限流和配额约束。两套的 `ENVIRONMENT` 均为 `production`，安全逻辑一致；`DEPLOYMENT_ENV=production|test` 仅用于确认部署身份。
 
 认证限流的 `namespace_id` 在同一 Cloudflare 账户内跨 Worker 共享计数，须为每套环境分配不与其他应用复用的编号，不能直接沿用文档示例值。实际编号集中保存在环境清单；新增或修改限流绑定前，先有界盘点账户内已有 Worker 的限流绑定。
 
@@ -149,7 +149,7 @@ Windows 运维凭据可在仓库外按用户级 DPAPI 加密保存，本机忽�
 首次切换是单独的受控操作，不由自动发布重建或重置资源：
 
 1. 保存现有 Pages、Worker、D1、R2、KV、Access、Turnstile 和规则配置，确认现有业务数据保留。
-2. 新建测试业务资源与独立 Access 应用，不复制生产认证、媒体或会话；填齐环境清单。新库按顺序执行 `0001` 至 `0004`，为每个已完成文件登记 `d1_migrations`。
+2. 新建测试业务资源与独立 Access 应用，填齐环境清单。新库按顺序执行 `0001` 至 `0004`，为每个已完成文件登记 `d1_migrations`。如获准使用生产候选内测数据，按明确范围单独初始化：只读源库，核对目标为空及迁移一致；使用有界逻辑快照，先复制并核验独立 R2 对象，再以参数化批处理导入。会话、一次性验证记录、认证 Secret、KV 与 DO 配额不复制；FTS 和存储计数通过逻辑数据及触发器重建，保留目标迁移账本。核对摘要、外键、对象字节、排除项和生产数据未变后才能完成初始化。这不是分支合并或发布的一部分，不能自动覆盖后续测试数据。
 3. 用 `deployment/release-control.sql` 初始化专用发布控制 D1，一次性建立两条环境锁记录及校验和表；不得将该库绑定到业务运行时。
 4. 保持旧监控运行，新 control 暂不启用 Cron。读取并核验原生产 `budget:state`，将其原模式、金额及来源分别预置到控制 KV 的 `budget:state` 与 `budget:delivery`；读回两键一致，不以空状态或伪造零费用初始化。单个 key 缺失也会闭锁两环境。
 5. 部署控制专用 `QuotaGate` 和监控代码，确认只持有自身权威 KV、独立 DO、两环境副本及三个控制 Secret。启用 `7,22,37,52 * * * *`，避免与旧 `*/15` 同时写生产预算；保留旧监控直到新控制链路完成验收。
