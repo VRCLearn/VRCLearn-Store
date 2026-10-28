@@ -9,8 +9,6 @@ export interface SessionUser {
     emailVerified: boolean;
     role: "user" | "admin";
     banned: boolean;
-    twoFactorEnabled: boolean;
-    twoFactorVerified: boolean;
 }
 export interface ProductInput {
     title: string;
@@ -26,7 +24,7 @@ export interface ProductInput {
     currency: string | null;
     purchaseUrl: string;
     mediaIds: string[];
-    r18: false;
+    r18: boolean;
 }
 export interface Product extends ProductInput {
     id: string;

@@ -1,6 +1,6 @@
-import type { SupportEnv } from "./env";
-import { reserve } from "./email";
-import { readBounded } from "./http";
+import type { ControlEnv } from "./env";
+import { reserve } from "../worker/email";
+import { readBounded } from "../worker/http";
 import { isBudgetMode, type BudgetMode } from "../edge/budget";
 
 export type { BudgetMode } from "../edge/budget";
@@ -16,6 +16,14 @@ export interface BudgetState {
     edgeBlocked?: boolean;
     edgeDynamicBlocked?: boolean;
     edgeMediaBlocked?: boolean;
+    environments?: Record<"production" | "test", EnvironmentBudgetState>;
+}
+export interface EnvironmentBudgetState {
+    mode: BudgetMode;
+    reason: string;
+    delivered: boolean;
+    edgeDynamicBlocked: boolean;
+    edgeMediaBlocked: boolean;
 }
 interface UsageRow {
     ServiceName: string;
@@ -55,7 +63,14 @@ function savedBudgetState(value: unknown, now: number): value is BudgetState {
         && value.source === "billable-usage" && Array.isArray(value.coverage)
         && value.coverage.every((family) => typeof family === "string" && OBSERVED_FAMILIES.includes(family))
         && (value.coverageBasis === undefined || value.coverageBasis === "provider-account")
-        && (value.estimatedUsd === undefined || (typeof value.estimatedUsd === "number" && Number.isFinite(value.estimatedUsd) && value.estimatedUsd >= 0));
+        && (value.estimatedUsd === undefined || (typeof value.estimatedUsd === "number" && Number.isFinite(value.estimatedUsd) && value.estimatedUsd >= 0))
+        && (value.environments === undefined || (record(value.environments)
+            && Object.keys(value.environments).length === 2
+            && ["production", "test"].every((name) => {
+                const item = (value.environments as Record<string, unknown>)[name];
+                return record(item) && isBudgetMode(item.mode) && typeof item.reason === "string"
+                    && typeof item.delivered === "boolean" && typeof item.edgeDynamicBlocked === "boolean" && typeof item.edgeMediaBlocked === "boolean";
+            })));
 }
 
 function cycleBoundary(anchor: Date, year: number, month: number): number {
@@ -199,7 +214,34 @@ export function mediaBlockExpression(origin: string): string {
     return `http.host eq "${url.hostname}"`;
 }
 
-interface EdgeStop { dynamic: boolean; media: boolean }
+export function sharedDynamicBlockExpression(origins: string[]): string {
+    return sharedExpression(origins, dynamicBlockExpression);
+}
+
+export function sharedMediaBlockExpression(origins: string[]): string {
+    return sharedExpression(origins, mediaBlockExpression);
+}
+
+function sharedExpression(origins: string[], expression: (origin: string) => string): string {
+    const values = [...new Set(origins)].sort();
+    if (!values.length || values.length > 2) throw new Error("INVALID_STOP_SCOPE");
+    const expressions = values.map(expression);
+    return expressions.length === 1 ? expressions[0] : `(${expressions.join(" or ")})`;
+}
+
+export interface EdgeStop { dynamic: boolean; media: boolean }
+export interface StopTarget {
+    name: "production" | "test";
+    origin: string;
+    mediaOrigin: string;
+    dynamicRuleId: string;
+    mediaRuleId: string;
+    blocked: boolean;
+}
+export interface EdgeStopResult {
+    targets: Record<"production" | "test", EdgeStop>;
+    verified: EdgeStop;
+}
 interface EdgeRule {
     id: string;
     action: string;
@@ -229,58 +271,91 @@ function entrypointRules(value: unknown, id: string): EdgeRule[] | null {
     return rules;
 }
 
-function matchingRule(rules: EdgeRule[], id: string, expression: string): EdgeRule | undefined {
+function matchingRule(rules: EdgeRule[], id: string, expressions: Set<string>): EdgeRule | undefined {
     const index = rules.findIndex((rule) => rule.id === id);
     const rule = rules[index];
-    // A prior skip may bypass every subsequent custom rule. Do not report a stop
-    // as effective or rearrange rules that the operator has not approved.
-    if (!rule || !rule.bare || rule.action !== "block" || rule.expression !== expression || rules.slice(0, index).some((entry) => entry.action === "skip" && entry.enabled !== false)) return undefined;
+    // A prior skip may bypass subsequent custom rules. Only exact definitions
+    // generated from the two fixed targets may be replaced or reported active.
+    if (!rule || !rule.bare || rule.action !== "block" || !expressions.has(rule.expression) || rules.slice(0, index).some((entry) => entry.action === "skip" && entry.enabled !== false)) return undefined;
     return rule;
 }
 
-async function activateEdgeStop(env: SupportEnv): Promise<EdgeStop> {
-    const stopped: EdgeStop = { dynamic: false, media: false };
-    const validId = (value: string) => /^[a-f0-9]{32}$/.test(value) && !/^0+$/.test(value);
-    if (!env.CF_API_TOKEN || !validId(env.CF_ZONE_ID) || !validId(env.EDGE_RULESET_ID) || env.EDGE_RULE_ID === env.EDGE_MEDIA_RULE_ID) return stopped;
-    const base = `https://api.cloudflare.com/client/v4/zones/${env.CF_ZONE_ID}/rulesets`;
-    const entrypoint = `${base}/phases/http_request_firewall_custom/entrypoint`;
-    const expected: { key: keyof EdgeStop; id: string; expression: string }[] = [];
-    for (const target of [
-        { key: "dynamic" as const, id: env.EDGE_RULE_ID, origin: env.ORIGIN, expression: dynamicBlockExpression },
-        { key: "media" as const, id: env.EDGE_MEDIA_RULE_ID, origin: env.MEDIA_ORIGIN, expression: mediaBlockExpression },
-    ]) {
-        if (!validId(target.id)) continue;
-        try { expected.push({ key: target.key, id: target.id, expression: target.expression(target.origin) }); }
-        catch { /* An invalid host must not disable the other configured stop. */ }
-    }
-    if (!expected.length) return stopped;
-    let rules = entrypointRules(await cloudflareJson(entrypoint, env.CF_API_TOKEN), env.EDGE_RULESET_ID);
-    if (!rules) return stopped;
-    let attempted = false;
-    for (const target of expected) {
-        if (!validId(target.id)) continue;
-        const rule = matchingRule(rules, target.id, target.expression);
-        if (!rule) continue;
-        if (rule.enabled === true) { stopped[target.key] = true; continue; }
-        attempted = true;
-        try {
-            // Rulesets PATCH replaces the definition. Preserve the verified bare
-            // block rule and its metadata, changing only enabled; never send position.
-            await cloudflareJson(`${base}/${env.EDGE_RULESET_ID}/rules/${target.id}`, env.CF_API_TOKEN, {
-                method: "PATCH", body: JSON.stringify({ action: "block", enabled: true, expression: rule.expression, description: rule.description, ref: rule.ref }),
-            });
-        } catch { /* A failed/uncertain write must not prevent the other stop. */ }
-    }
-    if (attempted) {
-        // PATCH success alone cannot prove that the active entry point blocks.
-        // Read it once even after an uncertain write; never retry the mutation.
-        rules = entrypointRules(await cloudflareJson(entrypoint, env.CF_API_TOKEN), env.EDGE_RULESET_ID);
-        for (const target of expected) stopped[target.key] = Boolean(rules && matchingRule(rules, target.id, target.expression)?.enabled === true);
-    }
-    return stopped;
+export function monitorStopTargets(env: ControlEnv, blocked: Record<"production" | "test", boolean>): StopTarget[] {
+    return [
+        { name: "production", origin: env.PRODUCTION_ORIGIN, mediaOrigin: env.PRODUCTION_MEDIA_ORIGIN, dynamicRuleId: env.PRODUCTION_EDGE_RULE_ID, mediaRuleId: env.PRODUCTION_EDGE_MEDIA_RULE_ID, blocked: blocked.production },
+        { name: "test", origin: env.TEST_ORIGIN, mediaOrigin: env.TEST_MEDIA_ORIGIN, dynamicRuleId: env.TEST_EDGE_RULE_ID, mediaRuleId: env.TEST_EDGE_MEDIA_RULE_ID, blocked: blocked.test },
+    ];
 }
 
-async function alert(env: SupportEnv, state: BudgetState): Promise<void> {
+export async function activateEdgeStops(env: ControlEnv, targets: StopTarget[], options: { allowRecovery?: boolean } = {}): Promise<EdgeStopResult> {
+    const result: EdgeStopResult = {
+        targets: { production: { dynamic: false, media: false }, test: { dynamic: false, media: false } },
+        verified: { dynamic: false, media: false },
+    };
+    const validId = (value: string) => /^[a-f0-9]{32}$/.test(value) && !/^0+$/.test(value);
+    if (!env.CF_API_TOKEN || !validId(env.CF_ZONE_ID) || !validId(env.EDGE_RULESET_ID)
+        || targets.length !== 2 || new Set(targets.map((target) => target.name)).size !== 2
+        || !targets.every((target) => ["production", "test"].includes(target.name))) return result;
+    const base = `https://api.cloudflare.com/client/v4/zones/${env.CF_ZONE_ID}/rulesets`;
+    const entrypoint = `${base}/phases/http_request_firewall_custom/entrypoint`;
+    const expected: { key: keyof EdgeStop; id: string; expression: string; enabled: boolean; allowed: Set<string>; origins: string[]; blocked: string[]; combine: (origins: string[]) => string }[] = [];
+    const dynamicIds = new Set(targets.map((target) => target.dynamicRuleId));
+    const mediaIds = new Set(targets.map((target) => target.mediaRuleId));
+    if ([...dynamicIds].some((id) => mediaIds.has(id))) return result;
+    for (const group of [
+        { key: "dynamic" as const, ids: dynamicIds, origins: targets.map((target) => target.origin), expression: sharedDynamicBlockExpression },
+        { key: "media" as const, ids: mediaIds, origins: targets.map((target) => target.mediaOrigin), expression: sharedMediaBlockExpression },
+    ]) {
+        if (group.ids.size !== 1) continue;
+        const id = [...group.ids][0];
+        if (!validId(id)) continue;
+        try {
+            if (new Set(group.origins).size !== 2) continue;
+            const allowed = new Set([group.expression([group.origins[0]]), group.expression([group.origins[1]]), group.expression(group.origins)]);
+            const blocked = group.origins.filter((_, index) => targets[index].blocked);
+            expected.push({ key: group.key, id, expression: group.expression(blocked.length ? blocked : group.origins), enabled: blocked.length > 0, allowed, origins: group.origins, blocked, combine: group.expression });
+        } catch { /* An invalid group must not prevent the other stop. */ }
+    }
+    if (!expected.length) return result;
+    let rules: EdgeRule[] | null;
+    try { rules = entrypointRules(await cloudflareJson(entrypoint, env.CF_API_TOKEN), env.EDGE_RULESET_ID); }
+    catch { return result; }
+    if (!rules) return result;
+    let attempted = false;
+    for (const target of expected) {
+        const rule = matchingRule(rules, target.id, target.allowed);
+        if (!rule) continue;
+        // Normal checks may expand an existing stop, but cannot narrow an
+        // operator/emergency stop after an uncertain or concurrent failure.
+        if (rule.enabled === true && !options.allowRecovery) {
+            const active = target.origins.filter((origin) => rule.expression === target.combine([origin]) || rule.expression === target.combine(target.origins));
+            const scope = [...new Set([...target.blocked, ...active])];
+            target.expression = target.combine(scope.length ? scope : target.origins);
+            target.enabled = scope.length > 0;
+        }
+        if (rule.enabled === target.enabled && rule.expression === target.expression) continue;
+        attempted = true;
+        try {
+            // Each shared rule is patched at most once after combining every
+            // environment's desired state. Never let later fanout overwrite it.
+            await cloudflareJson(`${base}/${env.EDGE_RULESET_ID}/rules/${target.id}`, env.CF_API_TOKEN, {
+                method: "PATCH", body: JSON.stringify({ action: "block", enabled: target.enabled, expression: target.expression, description: rule.description, ref: rule.ref }),
+            });
+        } catch { /* Read back uncertain writes without retrying the mutation. */ }
+    }
+    if (attempted) {
+        try { rules = entrypointRules(await cloudflareJson(entrypoint, env.CF_API_TOKEN), env.EDGE_RULESET_ID); }
+        catch { return result; }
+    }
+    for (const target of expected) {
+        const verified = rules && matchingRule(rules, target.id, new Set([target.expression]));
+        result.verified[target.key] = Boolean(verified && verified.enabled === target.enabled);
+        for (const environment of targets) result.targets[environment.name][target.key] = result.verified[target.key] && target.enabled && environment.blocked;
+    }
+    return result;
+}
+
+async function alert(env: ControlEnv, state: BudgetState): Promise<void> {
     if (!env.ALERT_EMAIL || !/^[^\s@]+@[^\s@]+$/.test(env.ALERT_EMAIL)) return;
     const day = new Date().toISOString().slice(0, 10);
     const permitted = await reserve(env, `alert:${state.mode}:${state.reason}:${day}`, [
@@ -292,20 +367,37 @@ async function alert(env: SupportEnv, state: BudgetState): Promise<void> {
     await env.EMAIL.send({
         from: { email: env.EMAIL_FROM, name: "VRCLearn Store Operations" }, to: env.ALERT_EMAIL,
         subject: `VRCLearn Store: ${state.mode} (${state.reason})`,
-        text: `Mode: ${state.mode}\nReason: ${state.reason}\nEstimated account usage plus base plan: ${state.estimatedUsd === undefined ? "unavailable" : `$${state.estimatedUsd}`}\nSource: ${state.source}\nUpdated: ${state.updatedAt}\nAutomatic recovery is disabled. Inspect the Cloudflare dashboard before manually restoring service.`,
+        text: `Mode: ${state.mode}\nReason: ${state.reason}\nEstimated account usage plus base plan: ${state.estimatedUsd === undefined ? "unavailable" : `$${state.estimatedUsd}`}\nSource: ${state.source}\nUpdated: ${state.updatedAt}\nEnvironment results: ${JSON.stringify(state.environments ?? {})}\nAutomatic recovery is disabled. Inspect the Cloudflare dashboard before manually restoring service.`,
     });
 }
 
-export async function runMonitor(env: SupportEnv): Promise<BudgetState> {
+export async function runMonitor(env: ControlEnv, options: { failClosed?: boolean } = {}): Promise<BudgetState> {
+    const targets = [
+        { name: "production" as const, state: env.PRODUCTION_STATE, origin: env.PRODUCTION_ORIGIN, mediaOrigin: env.PRODUCTION_MEDIA_ORIGIN, dynamicRuleId: env.PRODUCTION_EDGE_RULE_ID, mediaRuleId: env.PRODUCTION_EDGE_MEDIA_RULE_ID },
+        { name: "test" as const, state: env.TEST_STATE, origin: env.TEST_ORIGIN, mediaOrigin: env.TEST_MEDIA_ORIGIN, dynamicRuleId: env.TEST_EDGE_RULE_ID, mediaRuleId: env.TEST_EDGE_MEDIA_RULE_ID },
+    ];
     let previous: BudgetState | null = null;
-    let stateUnavailable = false;
+    let stateUnavailable = options.failClosed === true;
     try {
         const stored = await env.STATE.get<unknown>("budget:state", "json");
-        if (stored !== null) {
-            if (!savedBudgetState(stored, Date.now())) throw new Error("BUDGET_STATE_INVALID");
-            previous = stored;
-        }
+        if (!savedBudgetState(stored, Date.now())) throw new Error("BUDGET_STATE_INVALID");
+        previous = stored;
+        const delivery = await env.STATE.get<unknown>("budget:delivery", "json");
+        if (!savedBudgetState(delivery, Date.now())) throw new Error("BUDGET_DELIVERY_INVALID");
+        const account = RANK[delivery.mode] > RANK[previous.mode] ? delivery : previous;
+        previous = { ...account, environments: delivery.environments };
     } catch { stateUnavailable = true; }
+    const replicas = await Promise.all(targets.map(async (target) => {
+        try {
+            const stored = await target.state.get<unknown>("budget:state", "json");
+            if (stored !== null && !savedBudgetState(stored, Date.now())) throw new Error("REPLICA_STATE_INVALID");
+            return { state: stored as BudgetState | null, failed: false };
+        } catch { return { state: null, failed: true }; }
+    }));
+    // If the authority write failed after an earlier account-wide stop, both
+    // isolated replicas retain that latch. A single test replica cannot promote
+    // the production/account mode by changing its own local state.
+    if (replicas.every((replica) => replica.state?.mode === "maintenance" && replica.state.reason === "budget_state_unavailable")) stateUnavailable = true;
     let estimate: ReturnType<typeof estimateUsage> | null = null;
     try {
         if (stateUnavailable) throw new Error("BUDGET_STATE_UNAVAILABLE");
@@ -313,27 +405,52 @@ export async function runMonitor(env: SupportEnv): Promise<BudgetState> {
         const base = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/billable-usage`;
         const info = await cloudflareJson(`${base}/info`, env.CF_MONITOR_TOKEN);
         const queriedAt = Date.now();
-        const window = billingUsageWindow(info, queriedAt);
-        estimate = estimateUsage(await cloudflareJson(`${base}?${window}`, env.CF_MONITOR_TOKEN), queriedAt, info);
+        estimate = estimateUsage(await cloudflareJson(`${base}?${billingUsageWindow(info, queriedAt)}`, env.CF_MONITOR_TOKEN), queriedAt, info);
     } catch { /* Missing or unverified cost data must never be treated as zero usage. */ }
     const next = nextBudgetState(previous, estimate, Date.now());
-    const failState = () => { next.mode = "maintenance"; next.reason = "budget_state_unavailable"; };
-    if (stateUnavailable) failState();
-    // Persist the application gate before attempting email or external rules.
+    if (stateUnavailable) { next.mode = "maintenance"; next.reason = "budget_state_unavailable"; }
+    // Commit the account gate before fanout. Use a different key for the final
+    // receipts so normal checks never violate KV's same-key write-rate limit.
     try { await env.STATE.put("budget:state", JSON.stringify(next)); }
-    catch { failState(); }
-    if (next.mode === "maintenance") {
-        let stopped: EdgeStop = { dynamic: false, media: false };
-        try { stopped = await activateEdgeStop(env); } catch { /* Application gates remain closed. */ }
-        next.edgeDynamicBlocked = stopped.dynamic;
-        next.edgeMediaBlocked = stopped.media;
-        next.edgeBlocked = stopped.dynamic && stopped.media;
-        try { await env.STATE.put("budget:state", JSON.stringify(next)); }
-        catch { console.warn(JSON.stringify({ event: "budget_state_write_failed" })); }
+    catch { next.mode = "maintenance"; next.reason = "budget_state_unavailable"; }
+    const environments = {} as Record<"production" | "test", EnvironmentBudgetState>;
+    async function distribute(): Promise<void> {
+        for (const [index, target] of targets.entries()) {
+            const prior = replicas[index];
+            const latched = previous?.environments?.[target.name]?.mode === "maintenance" || prior.state?.mode === "maintenance";
+            let mode = next.mode === "maintenance" || prior.failed || latched ? "maintenance" as const : next.mode;
+            let reason = prior.failed ? "replica_state_unavailable" : latched && next.mode !== "maintenance" ? "manual_recovery_required" : next.reason;
+            let delivered = false;
+            try {
+                // Replicas only contain their own gate, never the authority's
+                // per-environment receipts or another environment's resources.
+                await target.state.put("budget:state", JSON.stringify({ ...next, environments: undefined, mode, reason }));
+                delivered = true;
+            } catch { mode = "maintenance"; reason = "replica_state_unavailable"; }
+            environments[target.name] = { mode, reason, delivered, edgeDynamicBlocked: false, edgeMediaBlocked: false };
+        }
+        if (targets.some((target) => environments[target.name].mode === "maintenance")) {
+            const stopped = await activateEdgeStops(env, targets.map((target) => ({ ...target, blocked: environments[target.name].mode === "maintenance" })));
+            for (const target of targets) {
+                environments[target.name].edgeDynamicBlocked = stopped.targets[target.name].dynamic;
+                environments[target.name].edgeMediaBlocked = stopped.targets[target.name].media;
+            }
+        }
+        next.environments = environments;
+        next.edgeDynamicBlocked = targets.every((target) => environments[target.name].edgeDynamicBlocked);
+        next.edgeMediaBlocked = targets.every((target) => environments[target.name].edgeMediaBlocked);
+        next.edgeBlocked = next.edgeDynamicBlocked && next.edgeMediaBlocked;
     }
-    if (next.mode !== "normal" || (next.estimatedUsd ?? 0) >= 10) {
-        try { await alert(env, next); } catch { console.warn(JSON.stringify({ event: "budget_alert_failed", mode: next.mode })); }
+    await distribute();
+    let receiptsUnavailable = false;
+    try { await env.STATE.put("budget:delivery", JSON.stringify(next)); }
+    catch { receiptsUnavailable = true; console.warn(JSON.stringify({ event: "budget_delivery_write_failed" })); }
+    const deliveryFailure = targets.some((target) => environments[target.name].mode === "maintenance" && next.mode !== "maintenance");
+    if (next.mode !== "normal" || (next.estimatedUsd ?? 0) >= 10 || deliveryFailure || receiptsUnavailable) {
+        const alertState = deliveryFailure || receiptsUnavailable ? { ...next, reason: "environment_delivery_failed" } : next;
+        try { await alert(env, alertState); }
+        catch { console.warn(JSON.stringify({ event: "budget_alert_failed", mode: next.mode })); }
     }
-    console.info(JSON.stringify({ event: "budget_check", mode: next.mode, reason: next.reason, estimatedUsd: next.estimatedUsd, edgeBlocked: next.edgeBlocked }));
+    console.info(JSON.stringify({ event: "budget_check", mode: next.mode, reason: next.reason, estimatedUsd: next.estimatedUsd, edgeBlocked: next.edgeBlocked, environments }));
     return next;
 }

@@ -1,7 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import type { Product, Workspace } from "../../shared/contracts";
 import { messages } from "../../src/i18n";
-import jsQR from "jsqr";
 
 // Material tabs expose their roles through ElementInternals, which Playwright's
 // DOM role selector does not read. Check Chromium's real accessibility tree.
@@ -45,15 +44,16 @@ async function expectThemedScrollbar(page: Page) {
     if (appearance.fine) expect(appearance.color).toBe(appearance.expected);
 }
 
-test("static storefront uses Material menus and preserves a customized theme without API calls", async ({ page }, testInfo) => {
+test("static storefront uses Material menus and preserves a customized theme with one recommendation request", async ({ page }, testInfo) => {
     const apiCalls: string[] = [];
     const errors: string[] = [];
     page.on("request", (request) => { if (request.url().includes("/api/")) apiCalls.push(request.url()); });
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/v1/recommendations", (route) => route.fulfill({ json: { items: [] } }));
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto("/en");
     await expect(page.getByRole("heading", { name: "Find your next expression." })).toBeVisible();
-    await expect(page.locator("header md-menu")).toHaveCount(1);
+    await expect(page.locator("header md-menu")).toHaveCount(2);
     await expect(page.locator("header md-filled-tonal-icon-button")).toHaveCount(3);
     await expectThemedScrollbar(page);
 
@@ -100,11 +100,12 @@ test("static storefront uses Material menus and preserves a customized theme wit
     await page.getByRole("button", { name: "Language", exact: true }).press("ArrowDown");
     await page.getByRole("menuitem", { name: "简体中文", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
-    await expect(page.locator("header md-menu")).not.toBeVisible();
+    await expect(page.getByRole("menu", { name: "语言", exact: true })).not.toBeVisible();
     await page.getByRole("button", { name: "语言", exact: true }).click();
     await page.getByRole("menuitem", { name: "日本語", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("lang", "ja");
-    expect(apiCalls).toEqual([]);
+    // One request per page load; this test explicitly reloads once.
+    expect(apiCalls.map((url) => new URL(url).pathname)).toEqual(["/api/v1/recommendations", "/api/v1/recommendations"]);
     expect(errors).toEqual([]);
     expect(await page.evaluate(() => document.querySelectorAll("header select, header button").length)).toBe(0);
     await expectReadableHero(page, testInfo.project.name === "mobile");
@@ -354,6 +355,36 @@ async function arrangeMerchantPublishing(page: Page, options: { revokeCnOnSave?:
     return { submissions, saves, workspace };
 }
 
+test("Adult selection excludes China review and preserves the flag after saving", async ({ page }) => {
+    const { submissions, saves } = await arrangeMerchantPublishing(page);
+    const t = messages("en");
+    const mainland = page.getByRole("checkbox", { name: t.cn, exact: true });
+    await mainland.check();
+    await page.getByRole("checkbox", { name: t.intl, exact: true }).check();
+    await page.getByRole("checkbox", { name: t.adult, exact: true }).check();
+    await expect(mainland).not.toBeChecked();
+    await expect(mainland).toBeDisabled();
+    await expect(page.getByText(t.adultRegionHint, { exact: true })).toBeVisible();
+    await page.getByRole("button", { name: t.saveDraft, exact: true }).click();
+    await expect.poll(() => saves.length).toBe(1);
+    expect(saves[0].r18).toBe(true);
+    await expect(page.getByRole("checkbox", { name: t.adult, exact: true })).toBeChecked();
+    await page.getByRole("button", { name: t.submitReview, exact: true }).click();
+    await page.getByRole("button", { name: t.confirm, exact: true }).click();
+    await expect.poll(() => submissions.length).toBe(1);
+    expect(submissions[0].regions).toEqual(["intl"]);
+});
+
+test("Adult revisions of China listings require unpublishing China first", async ({ page }) => {
+    const { submissions } = await arrangeMerchantPublishing(page, { published: true });
+    const t = messages("en");
+    await page.getByRole("checkbox", { name: t.adult, exact: true }).check();
+    await page.getByRole("checkbox", { name: t.intl, exact: true }).check();
+    await page.getByRole("button", { name: t.saveDraft, exact: true }).click();
+    await expect(page.getByRole("button", { name: t.submitReview, exact: true })).toBeDisabled();
+    expect(submissions).toEqual([]);
+});
+
 test("merchant requests another region for published content without creating a new revision", async ({ page }) => {
     const { submissions, saves, workspace } = await arrangeMerchantPublishing(page, { published: true });
     const t = messages("en");
@@ -390,7 +421,6 @@ test("merchant sees the rejected region reason and saves a fresh revision before
     await expect(submitReview).toBeDisabled();
     await expect(page.getByText(t.saveBeforeSubmit, { exact: true })).toBeVisible();
     expect(submissions).toEqual([]);
-    await page.getByRole("checkbox", { name: t.allAges, exact: true }).check();
     await page.getByRole("button", { name: t.saveDraft, exact: true }).click();
     await expect.poll(() => saves.length).toBe(1);
     expect(workspace.products[0].revisionId).not.toBe(revisionId);
@@ -418,7 +448,7 @@ for (const canRetry of [false, true]) {
         await page.route("**/api/**", (route) => {
             const request = route.request();
             const path = new URL(request.url()).pathname;
-            if (path === "/api/v1/me") return route.fulfill({ json: { user: { id: "local-reviewer", email: "reviewer@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false, twoFactorEnabled: true, twoFactorVerified: true } } });
+            if (path === "/api/v1/me") return route.fulfill({ json: { user: { id: "local-reviewer", email: "reviewer@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false } } });
             if (path === "/api/v1/admin/queue") return route.fulfill({ json: { permissions: [], products: [item], shops: [], reports: [] } });
             if (path === `/api/v1/admin/revisions/${revisionId}/review` && request.method() === "POST") {
                 decisions.push(request.postDataJSON());
@@ -479,12 +509,10 @@ for (const revokeCnOnSave of [false, true]) {
         await page.getByRole("checkbox", { name: t.cn, exact: true }).check();
         await page.getByRole("checkbox", { name: t.intl, exact: true }).check();
         await page.getByRole("textbox", { name: t.title, exact: true }).fill("Saved publishing draft");
-        await page.getByRole("checkbox", { name: t.allAges, exact: true }).check();
         await page.getByRole("button", { name: t.saveDraft, exact: true }).click();
         await expect.poll(() => saves.length).toBe(1);
         expect(saves[0].title).toBe("Saved publishing draft");
         // The editor still remounts for the fresh revision and resets its confirmation.
-        await expect(page.getByRole("checkbox", { name: t.allAges, exact: true })).not.toBeChecked();
         await expect(page.getByRole("textbox", { name: t.title, exact: true })).toHaveValue("Saved publishing draft");
         const mainland = page.getByRole("checkbox", { name: t.cn, exact: true });
         if (revokeCnOnSave) {
@@ -544,91 +572,57 @@ test("Chinese registration submits a display nickname and shows an auth guard fa
 });
 
 for (const locale of ["zh-CN", "en", "ja"] as const) {
-    test(`MFA setup guides enrollment, handles invalid codes and saves recovery codes in ${locale}`, async ({ page }, testInfo) => {
+    test(`password login opens the account and review desk in ${locale}`, async ({ page }) => {
         const t = messages(locale);
-        let verification: Record<string, unknown> | undefined;
-        let verified = false;
+        let signedIn = false;
+        let signIn: Record<string, unknown> | undefined;
+        const authenticationPaths: string[] = [];
+        const user = { id: "local-reviewer", email: "reviewer@example.com", name: "Reviewer", emailVerified: true, role: "admin", banned: false };
+        await page.route("https://challenges.cloudflare.com/turnstile/**", (route) => route.fulfill({
+            contentType: "application/javascript",
+            body: 'window.turnstile = { render: (_element, options) => { queueMicrotask(() => options.callback("local-browser-token")); return "local-widget"; }, remove: () => {} };',
+        }));
         await page.route("**/api/**", (route) => {
             const path = new URL(route.request().url()).pathname;
-            if (path === "/api/v1/me") return route.fulfill({ json: { user: {
-                id: "local-mfa-owner", email: "local-mfa@example.com", name: "Local MFA test", emailVerified: true,
-                role: "admin", banned: false, twoFactorEnabled: verified, twoFactorVerified: verified,
-            } } });
-            if (path === "/api/auth/two-factor/enable") return route.fulfill({ json: {
-                method: "totp",
-                // Public RFC test material, never a real account enrollment.
-                totpURI: "otpauth://totp/Local:local-mfa%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Local&digits=6&period=30",
-                backupCodes: ["local-test-recovery-code"],
-            } });
-            if (path === "/api/auth/two-factor/verify-totp") {
-                verification = route.request().postDataJSON();
-                if (verification?.code === "654321") {
-                    verified = true;
-                    return route.fulfill({ json: { status: true } });
-                }
-                return route.fulfill({ status: 401, json: { code: "INVALID_CODE", message: "Invalid code" } });
+            if (path.startsWith("/api/auth/")) authenticationPaths.push(path);
+            if (path === "/api/v1/me") return route.fulfill({ json: { user: signedIn ? user : null } });
+            if (path === "/api/v1/config") return route.fulfill({ json: { turnstileSiteKey: "local-browser-site-key" } });
+            if (path === "/api/auth/sign-in/email") {
+                signIn = route.request().postDataJSON();
+                signedIn = true;
+                return route.fulfill({ json: { user, token: "local-test-token", redirect: false } });
             }
+            if (path === "/api/v1/admin/queue") return route.fulfill({ json: { permissions: [], products: [], shops: [], reports: [] } });
             return route.fulfill({ status: 404, json: { code: "NOT_FOUND", message: "Unexpected test request" } });
         });
         await page.goto(`/${locale}/account`);
-        await expect(page.getByRole("heading", { name: t.mfaPrepare, exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaIntro, { exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaAppHint, { exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaPasswordHint, { exact: true })).toBeVisible();
-        await page.locator('input[type="password"]').fill("local-only-mfa-test-password");
-        await page.getByRole("button", { name: t.enableMfa, exact: true }).click();
-        const qr = page.getByRole("img", { name: t.mfaQr, exact: true });
-        await expect(qr).toBeVisible();
-        await expect(page.getByRole("heading", { name: t.mfaScan, exact: true })).toBeVisible();
-        await expect(page.getByRole("heading", { name: t.mfaConfirm, exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaSetup, { exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaCodeSource, { exact: true })).toBeVisible();
-        await expect(page.getByText("local-test-recovery-code", { exact: true })).toHaveCount(0);
-        await expect(page.getByRole("button", { name: t.mfaDownloadCodes, exact: true })).toHaveCount(0);
-        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-        await page.screenshot({ path: testInfo.outputPath("mfa-setup.png"), fullPage: true });
-        const bitmap = await qr.evaluate(async (element) => {
-            const image = new Image();
-            image.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(element));
-            await image.decode();
-            const canvas = document.createElement("canvas");
-            canvas.width = 256; canvas.height = 256;
-            const context = canvas.getContext("2d")!;
-            context.drawImage(image, 0, 0, 256, 256);
-            return Array.from(context.getImageData(0, 0, 256, 256).data);
+        await page.getByRole("textbox", { name: t.email, exact: true }).fill(user.email);
+        await page.locator('input[type="password"]').fill("a-local-browser-test-password");
+        await page.locator("form").getByRole("button", { name: t.login, exact: true }).click();
+        await expect(page.getByRole("heading", { name: user.name, exact: true })).toBeVisible();
+        await expect(page.getByText(user.email, { exact: true })).toBeVisible();
+        expect(signIn).toMatchObject({ email: user.email, password: "a-local-browser-test-password" });
+        await page.locator("main").getByRole("link", { name: t.admin, exact: true }).click();
+        await expect(page.getByRole("heading", { name: t.productsQueue, exact: true })).toBeVisible();
+        expect(authenticationPaths).toEqual(["/api/auth/sign-in/email"]);
+    });
+}
+
+for (const restricted of ["anonymous", "member", "unverified", "banned"] as const) {
+    test(`review desk blocks ${restricted} accounts before loading the queue`, async ({ page }) => {
+        let queueRequests = 0;
+        await page.route("**/api/**", (route) => {
+            const path = new URL(route.request().url()).pathname;
+            if (path === "/api/v1/me") return route.fulfill({ json: { user: restricted === "anonymous" ? null : {
+                id: "restricted-reviewer", email: "reviewer@example.com", name: "Reviewer",
+                role: restricted === "member" ? "user" : "admin", emailVerified: restricted !== "unverified", banned: restricted === "banned",
+            } } });
+            if (path === "/api/v1/admin/queue") queueRequests++;
+            return route.fulfill({ status: 403, json: { error: { code: "ADMIN_REQUIRED", message: "Administrator required" } } });
         });
-        const decoded = jsQR(new Uint8ClampedArray(bitmap), 256, 256);
-        expect(decoded?.data).toBe("otpauth://totp/Local:local-mfa%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Local&digits=6&period=30");
-        await expect(page.getByText("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", { exact: true })).not.toBeVisible();
-        await page.getByText(t.mfaManual, { exact: true }).click();
-        await expect(page.getByText("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", { exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaManualHint, { exact: true })).toBeVisible();
-        await expect(page.getByRole("link", { name: t.mfaOpenApp, exact: true })).toHaveAttribute("href", decoded!.data);
-        await page.getByRole("textbox", { name: t.authenticator, exact: true }).fill("012345");
-        await page.getByRole("button", { name: t.verify, exact: true }).click();
-        await expect(page.getByRole("alert")).toContainText(t.invalidVerificationCode);
-        expect(verification).toMatchObject({ code: "012345", trustDevice: false });
-        await expect(page.getByRole("alert")).not.toContainText(t.error);
-        await expect(page.getByRole("alert")).not.toContainText("Invalid code");
-        await page.getByText(t.mfaTroubleshoot, { exact: true }).click();
-        await expect(page.getByText(t.mfaTroubleshootHint, { exact: true })).toBeVisible();
-        await page.getByRole("textbox", { name: t.authenticator, exact: true }).fill("654321");
-        await page.getByRole("button", { name: t.verify, exact: true }).click();
-        await expect(page.getByRole("status")).toContainText(t.mfaEnabled);
-        await expect(page.getByRole("heading", { name: t.recoveryCodes, exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaRecoveryHint, { exact: true })).toBeVisible();
-        await expect(page.getByText(t.mfaNextLogin, { exact: true })).toBeVisible();
-        await expect(qr).toHaveCount(0);
-        await expect(page.getByText("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", { exact: true })).toHaveCount(0);
-        const downloadPromise = page.waitForEvent("download");
-        await page.getByRole("button", { name: t.mfaDownloadCodes, exact: true }).click();
-        const download = await downloadPromise;
-        expect(download.suggestedFilename()).toBe("vrclearn-store-recovery-codes.txt");
-        const contents = await download.createReadStream();
-        let text = "";
-        for await (const chunk of contents) text += chunk.toString();
-        expect(text).toBe(`${t.store}\nlocal-mfa@example.com\n\nlocal-test-recovery-code\n`);
-        await page.screenshot({ path: testInfo.outputPath("mfa-complete.png"), fullPage: true });
+        await page.goto("/en/admin");
+        await expect(page.getByRole("heading", { name: messages("en").adminRequired, exact: true })).toBeVisible();
+        expect(queueRequests).toBe(0);
     });
 }
 

@@ -92,7 +92,7 @@ export interface IconButtonProps {
 export function IconButton({ icon, children, label, variant = "standard", ...rest }: IconButtonProps) {
     const tag = variant === "tonal" ? "md-filled-tonal-icon-button" : variant === "outlined" ? "md-outlined-icon-button" : "md-icon-button";
     const controlled = rest["aria-pressed"] !== undefined;
-    return createElement(tag, { type: "button", title: label, "aria-label": label, ...rest, toggle: controlled, selected: rest["aria-pressed"], onClick: (event: MouseEvent) => {
+    return createElement(tag, { type: "button", title: label, "aria-label": label, ...rest, "aria-expanded": rest["aria-expanded"] === undefined ? undefined : String(rest["aria-expanded"]), toggle: controlled, selected: rest["aria-pressed"], onClick: (event: MouseEvent) => {
         if (controlled) event.preventDefault();
         rest.onClick?.();
     } }, children ?? (icon && <Icon name={icon} />));
@@ -188,14 +188,24 @@ export function MenuButton({ label, icon, items, onSelect, tonal = true }: {
         const opening = () => setOpen(true);
         const closing = () => setOpen(false);
         element.addEventListener("opening", opening);
-        element.addEventListener("closing", closing);
         element.addEventListener("closed", closing);
         return () => {
             element.removeEventListener("opening", opening);
-            element.removeEventListener("closing", closing);
             element.removeEventListener("closed", closing);
         };
     }, []);
+    useEffect(() => {
+        const element = menu.current;
+        if (!element) return;
+        const select = (event: Event) => {
+            const detail = (event as CustomEvent<{ initiator: HTMLElement; reason: { kind: string; key?: string } }>).detail;
+            if (detail.reason.kind !== "click-selection" && !(detail.reason.kind === "keydown" && ["Enter", "Space"].includes(detail.reason.key ?? ""))) return;
+            const value = detail.initiator.dataset.menuValue;
+            if (value !== undefined) onSelect(value);
+        };
+        element.addEventListener("close-menu", select, true);
+        return () => element.removeEventListener("close-menu", select, true);
+    }, [onSelect]);
     function show(last = false) {
         const element = menu.current;
         if (!element) return;
@@ -209,8 +219,7 @@ export function MenuButton({ label, icon, items, onSelect, tonal = true }: {
     return <span className="material-menu-anchor">
         <IconButton id={anchor} label={label} icon={icon} variant={tonal ? "tonal" : "standard"} onClick={toggle} onKeyDown={keyDown} aria-haspopup="menu" aria-expanded={open} aria-controls={menuId} aria-description={items.find((item) => item.selected)?.label} />
         {createElement("md-menu", { ref: menu, id: menuId, anchor, positioning: "popover", anchorCorner: "end-end", menuCorner: "start-end", "aria-label": label }, items.map((item) => createElement("md-menu-item", {
-            key: item.value, selected: Boolean(item.selected), "aria-selected": item.selected ? "true" : undefined,
-            onClick: () => { menu.current?.close(); onSelect(item.value); },
+            key: item.value, type: "button", "data-menu-value": item.value, selected: Boolean(item.selected), "aria-selected": item.selected ? "true" : undefined,
         }, item.icon && <Icon name={item.icon} slot="start" />, <span slot="headline">{item.label}</span>, item.selected && <Icon name="check" slot="end" />)))}
     </span>;
 }

@@ -69,7 +69,7 @@ export function Price({ product }: { product: Pick<Product, "pricing" | "price" 
 
 export function ProductCard({ product }: { product: Product }) {
     const { t, path } = useLocale();
-    return <Card role="article" className="product-card"><Link className="product-image" to={path(`/products/${encodeURIComponent(product.id)}`)}><InteractionState />{product.images[0] ? <img src={product.images[0]} alt="" loading="lazy" width="640" height="480" /> : <span className="image-placeholder" aria-hidden="true"><Icon name={product.category} size={48} /></span>}<span className="category-pill">{t[product.category]}</span></Link><div className="product-card-body"><Link className="seller-link" to={path(`/shops/${encodeURIComponent(product.shopId)}`)}>{product.shopName}</Link><h3><Link to={path(`/products/${encodeURIComponent(product.id)}`)}>{product.title}</Link></h3><p>{product.summary}</p><div className="product-card-bottom"><Price product={product} /><span className="platforms">{product.platforms.map((p) => p === "pc" ? "PC" : "Android").join(" · ")}</span></div></div></Card>;
+    return <Card role="article" className="product-card"><Link className="product-image" to={path(`/products/${encodeURIComponent(product.id)}`)}><InteractionState />{product.images[0] ? <img src={product.images[0]} alt="" loading="lazy" width="640" height="480" /> : <span className="image-placeholder" aria-hidden="true"><Icon name={product.category} size={48} /></span>}<span className="category-pill">{t[product.category]}</span></Link><div className="product-card-body"><Link className="seller-link" to={path(`/shops/${encodeURIComponent(product.shopId)}`)}>{product.shopName}</Link><h3><Link to={path(`/products/${encodeURIComponent(product.id)}`)}>{product.title}</Link></h3>{product.r18 && <p>{t.adult}</p>}<p>{product.summary}</p><div className="product-card-bottom"><Price product={product} /><span className="platforms">{product.platforms.map((p) => p === "pc" ? "PC" : "Android").join(" · ")}</span></div></div></Card>;
 }
 
 export async function currentUser(): Promise<SessionUser | null> {
@@ -79,7 +79,7 @@ export async function currentUser(): Promise<SessionUser | null> {
 
 export function SignInPrompt({ admin = false }: { admin?: boolean }) {
     const { t, path } = useLocale();
-    return <Card className="panel sign-in-prompt"><Icon name={admin ? "security" : "person"} size={32} /><h2>{admin ? t.mfaRequired : t.signInRequired}</h2><LinkButton href={path("/account")} icon="arrow_forward">{t.account}</LinkButton></Card>;
+    return <Card className="panel sign-in-prompt"><Icon name={admin ? "security" : "person"} size={32} /><h2>{admin ? t.adminRequired : t.signInRequired}</h2><LinkButton href={path("/account")} icon="arrow_forward">{t.account}</LinkButton></Card>;
 }
 
 export function ActionButton({ busy, children, ...props }: { busy: boolean; children: ReactNode; type?: "button" | "submit"; onClick?: () => void; variant?: ButtonVariant; disabled?: boolean; icon?: string; className?: string }) {

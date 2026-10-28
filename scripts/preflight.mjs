@@ -1,36 +1,86 @@
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
+import { dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { buildEdgePolicies, buildEnvironmentConfigs, loadEnvironments, repositoryRoot, validateEnvironments } from "./environment.mjs";
+import { staticBuildContext, validateStaticHeaders } from "./static-headers.mjs";
 
-const pages = JSON.parse(await readFile(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
-const support = JSON.parse(await readFile(new URL("../worker/wrangler.jsonc", import.meta.url), "utf8"));
-const policies = JSON.parse(await readFile(new URL("../deployment/edge-policies.json", import.meta.url), "utf8"));
-const errors = [];
-const realId = (value) => typeof value === "string" && /^(?:[a-f0-9]{32}|[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12})$/.test(value) && !/^[0-]+$/.test(value);
-const edgeId = (value) => typeof value === "string" && /^[a-f0-9]{32}$/.test(value) && !/^0+$/.test(value);
-for (const [name, config] of [["Pages", pages], ["Support", support]]) {
-    if (!realId(config.d1_databases?.[0]?.database_id)) errors.push(`${name}: configure a dedicated D1 database ID`);
-    if (!realId(config.kv_namespaces?.[0]?.id)) errors.push(`${name}: configure a dedicated KV namespace ID`);
+export function defaultConfigurationFiles(root = repositoryRoot) {
+    return ["", "worker"].flatMap((directory) => ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].map((name) => resolve(root, directory, name))).filter(existsSync);
 }
-if (pages.d1_databases[0].database_id !== support.d1_databases[0].database_id) errors.push("Pages and Support must use the same D1 database");
-if (pages.kv_namespaces[0].id !== support.kv_namespaces[0].id) errors.push("Pages and Support must use the same STATE namespace");
-if (!pages.vars.TURNSTILE_SITE_KEY) errors.push("Configure the production Turnstile site key");
-if (pages.vars.SKIP_DEPENDENCY_INSTALL !== "1") errors.push("Keep SKIP_DEPENDENCY_INSTALL=1 in the Pages source configuration so Git builds use npm ci once");
-if (pages.vars.ORIGIN !== support.vars.ORIGIN) errors.push("Runtime origins differ");
-if (pages.vars.MEDIA_ORIGIN !== support.vars.MEDIA_ORIGIN) errors.push("Runtime media origins differ");
-if (support.workers_dev !== false || support.preview_urls !== false || support.routes?.length) errors.push("Support Worker must remain service-binding-only");
-if (!edgeId(support.vars.CF_ACCOUNT_ID) || !edgeId(support.vars.CF_ZONE_ID)) errors.push("Configure the monitored account and emergency zone IDs");
-if (!edgeId(support.vars.EDGE_RULESET_ID) || !edgeId(support.vars.EDGE_RULE_ID) || !edgeId(support.vars.EDGE_MEDIA_RULE_ID)
-    || support.vars.EDGE_RULE_ID === support.vars.EDGE_MEDIA_RULE_ID) errors.push("Configure distinct pre-created dynamic and media emergency edge rule IDs");
-for (const name of ["BETTER_AUTH_SECRET", "TURNSTILE_SECRET_KEY", "CF_MONITOR_TOKEN", "CF_API_TOKEN", "ALERT_EMAIL"]) {
-    if (!Array.isArray(support.secrets?.required) || !support.secrets.required.includes(name)) errors.push(`Declare ${name} as a required Support secret`);
+
+export function validateDeploymentArtifacts(manifest, environment, configs, releaseSha) {
+    const errors = validateEnvironments(manifest);
+    if (errors.length) return errors;
+    let expected;
+    try { expected = buildEnvironmentConfigs(manifest, environment, { releaseSha }); }
+    catch (error) { return [error.message]; }
+    for (const kind of ["pages", "support", "control"]) {
+        if (!isDeepStrictEqual(configs[kind], expected[kind])) errors.push(`${kind}: generated bindings or configuration differ from the selected environment`);
+    }
+    return errors;
 }
-if (Object.hasOwn(support.vars, "ALERT_EMAIL")) errors.push("Keep the operations alert mailbox in an ALERT_EMAIL secret rather than public variables");
-if (policies.mediaAccess?.action !== "block" || policies.mediaAccess?.enabled !== true) errors.push("Media-region enforcement policy is missing");
-for (const name of ["emergencyDynamicStop", "emergencyMediaStop"]) {
-    if (policies[name]?.action !== "block" || policies[name]?.enabled !== false) errors.push(`Pre-create a disabled ${name} policy`);
+
+export function verifyRemoteHead(branch, expectedSha, execute = spawnSync) {
+    if (!["main", "test"].includes(branch) || !/^[a-f0-9]{40}$/.test(expectedSha ?? "")) return false;
+    const ref = `refs/heads/${branch}`;
+    try {
+        const result = execute("git", ["ls-remote", "origin", ref], { cwd: repositoryRoot, encoding: "utf8", timeout: 12_000, windowsHide: true, maxBuffer: 16_384 });
+        return result.status === 0 && !result.error && result.stdout.trim() === `${expectedSha}\t${ref}`;
+    } catch { return false; }
 }
-if (errors.length) {
-    console.error("Production configuration is incomplete:\n" + errors.map((error) => `- ${error}`).join("\n"));
-    process.exitCode = 1;
-} else {
-    console.log("Configuration references are consistent. This does not verify remote rules, secrets, billing access, or authorize deployment.");
+
+export function validateEdgeArtifacts(manifest, policies) {
+    try {
+        const { description: _description, ...actual } = policies;
+        return isDeepStrictEqual(actual, buildEdgePolicies(manifest)) ? [] : ["Edge policy artifact differs from the configured environment hosts"];
+    } catch { return ["The shared edge policy artifact or environment manifest is invalid"]; }
+}
+
+export async function runPreflight(variables = process.env) {
+    const manifest = await loadEnvironments();
+    const errors = validateEnvironments(manifest);
+    if (defaultConfigurationFiles().length) errors.push("Default Wrangler configurations are forbidden; use an explicit local or generated deployment configuration");
+    if (!errors.length) {
+        try { errors.push(...validateEdgeArtifacts(manifest, JSON.parse(await readFile(resolve(repositoryRoot, "deployment/edge-policies.json"), "utf8")))); }
+        catch { errors.push("The shared edge policy artifact is unavailable"); }
+    }
+    try {
+        const context = await staticBuildContext(variables);
+        const [template, headers] = await Promise.all([readFile(resolve(repositoryRoot, "public/_headers"), "utf8"), readFile(resolve(repositoryRoot, "dist/_headers"), "utf8")]);
+        errors.push(...validateStaticHeaders(template, headers, context.mediaOrigin));
+    } catch { errors.push("The selected environment's generated static headers are unavailable or invalid"); }
+    if (variables.CF_PAGES === "1") {
+        const environment = variables.DEPLOYMENT_ENV;
+        const profile = manifest[environment];
+        if (!profile || !["production", "test"].includes(environment)) errors.push("The Pages project must identify its deployment environment");
+        else if (variables.CF_PAGES_BRANCH !== profile.branch || variables.PAGES_PROJECT_NAME !== profile.pages.name) errors.push("Pages project/branch identity does not match the deployment environment");
+        if (!/^[a-f0-9]{40}$/.test(variables.RELEASE_SHA ?? "") || variables.CF_PAGES_COMMIT_SHA !== variables.RELEASE_SHA) errors.push("Pages checkout does not match the coordinated immutable release SHA");
+        if (!errors.length) {
+            try {
+                const redirectFile = resolve(repositoryRoot, ".wrangler/deploy/config.json");
+                const redirect = JSON.parse(await readFile(redirectFile, "utf8"));
+                const pagesPath = resolve(dirname(redirectFile), redirect.configPath ?? "");
+                const directory = dirname(pagesPath);
+                const configs = {
+                    pages: JSON.parse(await readFile(pagesPath, "utf8")),
+                    support: JSON.parse(await readFile(resolve(directory, "support.jsonc"), "utf8")),
+                    control: JSON.parse(await readFile(resolve(directory, "control.jsonc"), "utf8")),
+                };
+                errors.push(...validateDeploymentArtifacts(manifest, environment, configs, variables.RELEASE_SHA));
+            } catch { errors.push("The isolated generated Pages deployment configuration is unavailable"); }
+        }
+        if (!errors.length && !verifyRemoteHead(profile.branch, variables.RELEASE_SHA)) errors.push("The coordinated release is no longer the remote branch HEAD, or remote verification failed");
+    }
+    return errors;
+}
+
+if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
+    try {
+        const errors = await runPreflight();
+        if (errors.length) { console.error(`Deployment configuration is incomplete:\n${errors.map((error) => `- ${error}`).join("\n")}`); process.exitCode = 1; }
+        else console.log("Both environment manifests are isolated and internally consistent. Remote bindings, access, billing and deployment still require verification.");
+    } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

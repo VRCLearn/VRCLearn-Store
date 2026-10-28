@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { createHmac } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuth, getSessionUser, handleAuth } from "../worker/auth";
 import { hashPassword, verifyPassword } from "../worker/password";
@@ -13,16 +12,15 @@ const PASSWORD = "a-strong-password-for-tests-only";
 function fixture() {
     const value = testEnvironment();
     value.database.exec(readFileSync("migrations/0002_auth.sql", "utf8"));
-    const messages: { to?: unknown; text?: string }[] = [];
+    value.database.exec(readFileSync("migrations/0004_remove_mfa.sql", "utf8"));
+    const messages: { from?: { email: string; name: string }; to?: unknown; text?: string; html?: string; subject?: string }[] = [];
     const env: SupportEnv = {
         ...value.env,
         QUOTA: Object.assign({} as SupportEnv["QUOTA"], value.env.QUOTA),
         BETTER_AUTH_SECRET: "only-for-tests-24c41d71-e740-4542-ad8c-12d206952f17",
-        CF_MONITOR_TOKEN: "test-monitor-token", CF_API_TOKEN: "test-rule-token",
         AUTH_RATE_LIMIT: Object.assign({} as RateLimit, { limit: async () => ({ success: true }) }),
         EMAIL: Object.assign({} as SendEmail, { send: async (message: { text?: string }) => { messages.push(message); return { messageId: "test" }; } }),
-        EMAIL_FROM: "noreply@vrclearn.com", ALERT_EMAIL: "", CF_ACCOUNT_ID: "", CF_ZONE_ID: "", EDGE_RULESET_ID: "", EDGE_RULE_ID: "", EDGE_MEDIA_RULE_ID: "",
-        D1_DATABASE_ID: "", PAGES_PROJECT_NAME: "vrclearn-store", SUPPORT_SCRIPT_NAME: "vrclearn-store-support", PRIVATE_BUCKET_NAME: "private", PUBLIC_BUCKET_NAME: "public",
+        EMAIL_FROM: "noreply@vrclearn.com",
     };
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
         if (String(input) !== "https://challenges.cloudflare.com/turnstile/v0/siteverify") throw new Error("Unexpected external request");
@@ -49,7 +47,7 @@ describe("native password security", () => {
     });
 });
 
-describe("email authentication and admin MFA", () => {
+describe("email authentication and administrator access", () => {
     it.each(["maintenance", "kv-failure"])("stops every account route for %s before rate limits, Turnstile or database work", async (state) => {
         const f = fixture();
         try {
@@ -63,7 +61,7 @@ describe("email authentication and admin MFA", () => {
                 expect(result.status, path).toBe(503);
                 expect(result.headers.get("Retry-After"), path).toBe("60");
             }
-            for (const path of ["/sign-in/email", "/sign-up/email", "/request-password-reset", "/reset-password", "/two-factor/verify-totp", "/change-password", "/sign-out"]) {
+            for (const path of ["/sign-in/email", "/sign-up/email", "/request-password-reset", "/reset-password", "/change-password", "/sign-out"]) {
                 expect((await handleAuth(f.request(path, {}), f.env)).status, path).toBe(503);
             }
             expect(rate).not.toHaveBeenCalled();
@@ -92,46 +90,6 @@ describe("email authentication and admin MFA", () => {
         } finally { f.database.close(); }
     });
 
-    it("blocks MFA secret exports and revokes pre-enrollment sessions while preserving backup-code login", async () => {
-        const f = fixture();
-        try {
-            const email = "mfa-boundary@example.com";
-            expect((await handleAuth(f.request("/sign-up/email", { name: "Admin", email, password: PASSWORD }), f.env)).status).toBe(200);
-            const verificationUrl = /https:\/\/[^\s]+/.exec(f.messages[0].text ?? "")![0];
-            await handleAuth(new Request(verificationUrl), f.env);
-            const first = await handleAuth(f.request("/sign-in/email", { email, password: PASSWORD }), f.env);
-            const other = await handleAuth(f.request("/sign-in/email", { email, password: PASSWORD }), f.env);
-            const firstCookie = f.cookie(first);
-            const otherCookie = f.cookie(other);
-            const auth = createAuth(f.env);
-            const user = await getSessionUser(auth, f.env, new Headers({ cookie: firstCookie }));
-            f.database.prepare("INSERT INTO user_profiles(user_id,role,banned) VALUES(?,'admin',0)").run(user!.id);
-            const enabled = await handleAuth(f.request("/two-factor/enable", { password: PASSWORD, method: "totp" }, firstCookie), f.env);
-            expect(enabled.status).toBe(200);
-            const setup = await enabled.json() as { totpURI: string; backupCodes: string[] };
-            const code = await totp(new URL(setup.totpURI).searchParams.get("secret")!);
-            const completed = await handleAuth(f.request("/two-factor/verify-totp", { code }, firstCookie), f.env);
-            expect(completed.status).toBe(200);
-            const secureCookie = f.cookie(completed) || firstCookie;
-
-            for (const cookie of [otherCookie, secureCookie]) {
-                for (const path of ["/two-factor/get-totp-uri", "/two-factor/generate-backup-codes", "/two-factor/get-totp-uri/", "/two-factor/%67et-totp-uri"]) {
-                    const denied = await handleAuth(f.request(path, { password: PASSWORD }, cookie), f.env);
-                    expect(denied.status, path).toBe(404);
-                }
-            }
-            expect(await getSessionUser(auth, f.env, new Headers({ cookie: otherCookie }))).toBeNull();
-            expect(await getSessionUser(auth, f.env, new Headers({ cookie: secureCookie }))).toMatchObject({ role: "admin", twoFactorVerified: true });
-
-            const challenge = await handleAuth(f.request("/sign-in/email", { email, password: PASSWORD }), f.env);
-            expect(await challenge.clone().json()).toMatchObject({ twoFactorRedirect: true });
-            const recovered = await handleAuth(f.request("/two-factor/verify-backup-code", { code: setup.backupCodes[0] }, f.cookie(challenge)), f.env);
-            expect(recovered.status, await recovered.clone().text()).toBe(200);
-            expect(await getSessionUser(auth, f.env, new Headers({ cookie: f.cookie(recovered) }))).toMatchObject({ role: "admin", twoFactorVerified: true });
-            expect(await getSessionUser(auth, f.env, new Headers({ cookie: secureCookie }))).toMatchObject({ twoFactorVerified: true });
-        } finally { f.database.close(); }
-    });
-
     it("shares the reset callback rate limit across arbitrary tokens before database lookups", async () => {
         const f = fixture();
         try {
@@ -157,51 +115,46 @@ describe("email authentication and admin MFA", () => {
         } finally { f.database.close(); }
     });
 
-    it("requires verified email, records session-specific MFA, and revokes it on sign-out", async () => {
+    it("requires verified email, establishes administrator sessions and revokes them on sign-out", async () => {
         const f = fixture();
-        const signUp = await handleAuth(f.request("/sign-up/email", { name: "Test", email: "test@example.com", password: PASSWORD }), f.env);
-        expect(signUp.status, await signUp.clone().text()).toBe(200);
-        expect(f.messages).toHaveLength(1);
-        const denied = await handleAuth(f.request("/sign-in/email", { email: "test@example.com", password: PASSWORD }), f.env);
-        expect(denied.status).toBe(403);
-        const verificationUrl = /https:\/\/[^\s]+/.exec(f.messages[0].text ?? "")?.[0];
-        expect(verificationUrl).toBeTruthy();
-        const verified = await handleAuth(new Request(verificationUrl!), f.env);
-        expect(verified.status).toBeLessThan(400);
-        const signedIn = await handleAuth(f.request("/sign-in/email", { email: "test@example.com", password: PASSWORD }), f.env);
-        expect(signedIn.status, await signedIn.clone().text()).toBe(200);
-        const firstCookie = f.cookie(signedIn);
-        const auth = createAuth(f.env);
-        const current = await getSessionUser(auth, f.env, new Headers({ cookie: firstCookie }));
-        expect(current?.emailVerified).toBe(true);
-        expect(current?.twoFactorVerified).toBe(false);
-        f.database.prepare("INSERT INTO user_profiles(user_id,role,banned) VALUES(?,'admin',0)").run(current!.id);
-        const enabled = await handleAuth(f.request("/two-factor/enable", { password: PASSWORD, method: "totp" }, firstCookie), f.env);
-        expect(enabled.status, await enabled.clone().text()).toBe(200);
-        const setup = await enabled.json() as { totpURI: string };
-        expect((await getSessionUser(auth, f.env, new Headers({ cookie: firstCookie })))?.twoFactorVerified).toBe(false);
-        const token = await totp(new URL(setup.totpURI).searchParams.get("secret")!);
-        const twoFactor = await handleAuth(f.request("/two-factor/verify-totp", { code: token }, firstCookie), f.env);
-        expect(twoFactor.status, await twoFactor.clone().text()).toBe(200);
-        const secureCookie = f.cookie(twoFactor) || firstCookie;
-        expect(await getSessionUser(auth, f.env, new Headers({ cookie: secureCookie }))).toMatchObject({ role: "admin", twoFactorEnabled: true, twoFactorVerified: true });
-        const disabling = await handleAuth(f.request("/two-factor/disable", { password: PASSWORD }, secureCookie), f.env);
-        expect(disabling.status).toBe(403);
-        await handleAuth(f.request("/sign-out", {}, secureCookie), f.env);
-        expect(await getSessionUser(auth, f.env, new Headers({ cookie: secureCookie }))).toBeNull();
-        const challenge = await handleAuth(f.request("/sign-in/email", { email: "test@example.com", password: PASSWORD }), f.env);
-        expect(challenge.status).toBe(200);
-        expect(await challenge.clone().json()).toMatchObject({ twoFactorRedirect: true });
-        const challengeCookie = f.cookie(challenge);
-        expect(await getSessionUser(auth, f.env, new Headers({ cookie: challengeCookie }))).toBeNull();
-        const secondCode = await totp(new URL(setup.totpURI).searchParams.get("secret")!);
-        const completed = await handleAuth(f.request("/two-factor/verify-totp", { code: secondCode }, challengeCookie), f.env);
-        expect(completed.status, await completed.clone().text()).toBe(200);
-        expect(await getSessionUser(auth, f.env, new Headers({ cookie: f.cookie(completed) }))).toMatchObject({ role: "admin", twoFactorVerified: true });
-        const before = f.queries.length;
-        expect(createAuth(f.env)).toBe(auth);
-        await getSessionUser(createAuth(f.env), f.env, new Headers({ cookie: f.cookie(completed) }));
-        expect(f.queries.slice(before).some((query) => /pragma|sqlite_master/i.test(query.sql))).toBe(false);
+        try {
+            const signUp = await handleAuth(f.request("/sign-up/email", { name: "Test", email: "test@example.com", password: PASSWORD }), f.env);
+            expect(signUp.status, await signUp.clone().text()).toBe(200);
+            expect(f.messages).toHaveLength(1);
+            const denied = await handleAuth(f.request("/sign-in/email", { email: "test@example.com", password: PASSWORD }), f.env);
+            expect(denied.status).toBe(403);
+            const verificationUrl = /https:\/\/[^\s]+/.exec(f.messages[0].text ?? "")?.[0];
+            expect(verificationUrl).toBeTruthy();
+            expect((await handleAuth(new Request(verificationUrl!), f.env)).status).toBeLessThan(400);
+            const signedIn = await handleAuth(f.request("/sign-in/email", { email: "test@example.com", password: PASSWORD }), f.env);
+            expect(signedIn.status, await signedIn.clone().text()).toBe(200);
+            expect(await signedIn.clone().json()).not.toHaveProperty("twoFactorRedirect");
+            const cookie = f.cookie(signedIn);
+            const auth = createAuth(f.env);
+            const current = await getSessionUser(auth, f.env, new Headers({ cookie }));
+            expect(current).toMatchObject({ emailVerified: true, role: "user" });
+            expect(current).not.toHaveProperty("twoFactorEnabled");
+            expect(current).not.toHaveProperty("twoFactorVerified");
+            f.database.prepare("INSERT INTO user_profiles(user_id,role,banned) VALUES(?,'admin',0)").run(current!.id);
+            expect(await getSessionUser(auth, f.env, new Headers({ cookie }))).toMatchObject({ role: "admin", banned: false });
+            const before = f.queries.length;
+            expect(createAuth(f.env)).toBe(auth);
+            await getSessionUser(createAuth(f.env), f.env, new Headers({ cookie }));
+            expect(f.queries.slice(before).some((query) => /pragma|sqlite_master/i.test(query.sql))).toBe(false);
+            await handleAuth(f.request("/sign-out", {}, cookie), f.env);
+            expect(await getSessionUser(auth, f.env, new Headers({ cookie }))).toBeNull();
+        } finally { f.database.close(); }
+    });
+
+    it.each(["/two-factor/enable", "/two-factor/disable", "/two-factor/verify-totp", "/two-factor/verify-backup-code", "/two-factor/get-totp-uri", "/two-factor/generate-backup-codes"])("rejects the removed authentication endpoint %s before rate limits and database access", async (path) => {
+        const f = fixture();
+        try {
+            const rate = vi.spyOn(f.env.AUTH_RATE_LIMIT, "limit");
+            const before = f.queries.length;
+            expect((await handleAuth(f.request(path, {}), f.env)).status).toBe(404);
+            expect(rate).not.toHaveBeenCalled();
+            expect(f.queries).toHaveLength(before);
+        } finally { f.database.close(); }
     });
 
     it("rejects challenges for another host or action and rejects cross-origin writes before hashing", async () => {
@@ -246,6 +199,25 @@ describe("email authentication and admin MFA", () => {
         expect(f.messages).toHaveLength(0);
     });
 
+    it("sends marked test emails to arbitrary registered addresses using only the test origin and sender", async () => {
+        const f = fixture();
+        try {
+            f.env.DEPLOYMENT_ENV = "test";
+            f.env.ORIGIN = "https://test-store.vrclearn.com";
+            f.env.EMAIL_FROM = "test-noreply@vrclearn.com";
+            await sendAccountEmail(f.env, "registered@external.example", "Verify your email", `${f.env.ORIGIN}/api/auth/verify-email?token=test&callbackURL=%2Fen%2Faccount`);
+            expect(f.messages).toHaveLength(1);
+            expect(f.messages[0]).toMatchObject({
+                from: { email: "test-noreply@vrclearn.com", name: "VRCLearn Store Test" },
+                to: "registered@external.example", subject: "[TEST] Verify your email",
+                text: expect.stringContaining("https://test-store.vrclearn.com/api/auth/verify-email"),
+                html: expect.stringContaining("[TEST] Verify your email"),
+            });
+            await expect(sendAccountEmail(f.env, "registered@external.example", "Verify", "https://store.vrclearn.com/api/auth/verify-email?token=wrong-environment")).rejects.toThrow("INVALID_EMAIL_LINK");
+            expect(f.messages).toHaveLength(1);
+        } finally { f.database.close(); }
+    });
+
     it.each([
         { status: 429, payload: { allowed: true }, code: "QUOTA_UNAVAILABLE" },
         { status: 200, payload: { allowed: false }, code: "QUOTA_UNAVAILABLE" },
@@ -277,15 +249,3 @@ describe("email authentication and admin MFA", () => {
         expect(f.database.prepare("SELECT id FROM auth_verification WHERE id='active'").get()?.id).toBe("active");
     });
 });
-
-async function totp(secret: string): Promise<string> {
-    const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
-    let bits = "";
-    for (const character of secret.toUpperCase()) bits += alphabet.indexOf(character).toString(2).padStart(5, "0");
-    const bytes = Buffer.from(Array.from({ length: Math.floor(bits.length / 8) }, (_, index) => parseInt(bits.slice(index * 8, index * 8 + 8), 2)));
-    const counter = Buffer.alloc(8);
-    counter.writeBigUInt64BE(BigInt(Math.floor(Date.now() / 30_000)));
-    const digest = createHmac("sha1", bytes).update(counter).digest();
-    const offset = digest[digest.length - 1] & 15;
-    return ((digest.readUInt32BE(offset) & 0x7fffffff) % 1_000_000).toString().padStart(6, "0");
-}

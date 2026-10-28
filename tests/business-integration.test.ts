@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { handleApi } from "../server/api";
-import { getProduct, listProducts } from "../server/catalog";
+import { getProduct, listProducts, sitemap } from "../server/catalog";
 import type { ProductInput, Region } from "../shared/contracts";
+import type { AppEnv } from "../server/env";
 import { admin, edgeRequest, testEnvironment } from "./helpers";
 
 const content: ProductInput = { title: "星空 Avatar", language: "zh-CN", summary: "A handmade VRChat avatar", description: "A detailed **avatar** for VRChat.", category: "avatars", tags: ["space"], compatibleModels: [], platforms: ["pc", "android"], pricing: "paid", price: 20, currency: "USD", purchaseUrl: "https://maker.example.com/avatar", mediaIds: [], r18: false };
@@ -55,6 +56,54 @@ describe("real SQLite publication and authorization integration", () => {
         const products = (result.data as { products: { id: string; canRetry: boolean; regions: { region: Region; status: string }[] }[] }).products;
         return products.find((item) => item.id === revisionId);
     }
+    it.each([{ regions: ["cn"] }, { regions: ["cn", "intl"] }] as { regions: Region[] }[])("rejects adult submissions to $regions before challenges, submission quota or review writes", async ({ regions }) => {
+        await enroll();
+        const created = await api("merchant/products", "POST", { ...content, r18: true });
+        expect(created.status).toBe(201);
+        const product = created.data as { id: string; revisionId: string };
+        const quotaLimits: string[] = [];
+        fixture.env.QUOTA = Object.assign({} as AppEnv["QUOTA"], { getByName: () => ({ fetch: async (_input: unknown, init: RequestInit) => {
+            const body = JSON.parse(String(init.body)) as { limits: { key: string }[] };
+            quotaLimits.push(...body.limits.map((limit) => limit.key));
+            return Response.json({ allowed: true });
+        } }) });
+        vi.mocked(fetch).mockClear();
+        const result = await api(`merchant/products/${product.id}/submit`, "POST", { regions, turnstileToken: "test-token" });
+        expect(result).toMatchObject({ status: 400, data: { error: { code: "ADULT_CN_FORBIDDEN" } } });
+        expect(fetch).not.toHaveBeenCalled();
+        expect(quotaLimits.some((key) => key.startsWith("submit:"))).toBe(false);
+        expect(fixture.database.prepare("SELECT status FROM product_revisions WHERE id=?").get(product.revisionId)?.status).toBe("draft");
+        expect(fixture.database.prepare("SELECT COUNT(*) AS n FROM publication_requests WHERE revision_id=?").get(product.revisionId)?.n).toBe(0);
+    });
+    it("publishes adult products internationally and blocks stale mainland review approval and public reads", async () => {
+        await enroll();
+        const product = (await api("merchant/products", "POST", { ...content, r18: true })).data as { id: string; revisionId: string };
+        expect((await api(`merchant/products/${product.id}/submit`, "POST", { regions: ["intl"], turnstileToken: "test-token" })).status).toBe(200);
+        fixture.database.prepare("INSERT INTO publication_requests(revision_id,region,status) VALUES(?,'cn','pending')").run(product.revisionId);
+        expect((await api(`admin/revisions/${product.revisionId}/review`, "POST", { region: "cn", approve: true }, "admin"))).toMatchObject({ status: 400, data: { error: { code: "ADULT_CN_FORBIDDEN" } } });
+        await decide(product.revisionId, "cn", false);
+        await decide(product.revisionId, "intl");
+        expect((await getProduct(edgeRequest("/", { country: "JP" }), fixture.env, product.id)).r18).toBe(true);
+        await visible(product.id, "CN");
+        // Even a stale or corrupt mainland publication cannot expose Adult content.
+        fixture.database.prepare("UPDATE publication_requests SET status='approved' WHERE revision_id=? AND region='cn'").run(product.revisionId);
+        fixture.database.prepare("INSERT INTO publications(product_id,region,revision_id,media_token,active,updated_at,category,pricing,currency,price) SELECT product_id,'cn',revision_id,media_token,active,updated_at,category,pricing,currency,price FROM publications WHERE product_id=? AND region='intl'").run(product.id);
+        await visible(product.id, "CN");
+        expect(await sitemap(edgeRequest("/sitemap.xml", { country: "CN" }), fixture.env)).not.toContain(`${fixture.env.ORIGIN}/en/products/${product.id}`);
+    });
+    it("requires the mainland listing to be removed before an adult revision can replace a shared product", async () => {
+        await enroll();
+        const product = await create();
+        await decide(product.revisionId, "cn");
+        await decide(product.revisionId, "intl");
+        const revision = (await api(`merchant/products/${product.id}`, "PUT", { ...content, r18: true })).data as { revisionId: string };
+        expect((await api(`merchant/products/${product.id}/submit`, "POST", { regions: ["intl"], turnstileToken: "test-token" }))).toMatchObject({ status: 409, data: { error: { code: "ALL_REGIONS_REQUIRED" } } });
+        expect((await api(`merchant/products/${product.id}/unpublish`, "POST", { region: "cn" })).status).toBe(200);
+        expect((await api(`merchant/products/${product.id}/submit`, "POST", { regions: ["intl"], turnstileToken: "test-token" })).status).toBe(200);
+        await decide(revision.revisionId, "intl");
+        await visible(product.id, "CN");
+        expect((await getProduct(edgeRequest("/", { country: "JP" }), fixture.env, product.id)).r18).toBe(true);
+    });
     it("requires regional permission, keeps the old shared version, then switches both regions atomically", async () => {
         await enroll();
         const created = await api("merchant/products", "POST", content);
@@ -260,13 +309,16 @@ describe("real SQLite publication and authorization integration", () => {
         await visible(product.id, "JP", content.title);
         expect(fixture.database.prepare("SELECT region, status, reason FROM publication_requests WHERE revision_id = ? ORDER BY region").all(product.revisionId)).toEqual(approved);
     });
-    it("blocks ownership, MFA and unavailable-region favorites while keeping enrollment open", async () => {
+    it("enforces ownership and blocks non-administrators, restricted and unverified accounts while keeping enrollment open", async () => {
         await enroll();
         const created = (await api("merchant/products", "POST", content)).data as { id: string };
         expect((await api(`merchant/products/${created.id}`, "PUT", content, "outsider")).status).toBe(409);
-        const noMfa = { ...admin, twoFactorVerified: false };
-        fixture.env.AUTH = Object.assign({} as Fetcher, { fetch: async () => Response.json(noMfa) });
-        expect((await api("admin/queue", "GET", undefined, "admin")).status).toBe(403);
+        for (const user of [{ ...admin, role: "user" }, { ...admin, banned: true }, { ...admin, emailVerified: false }]) {
+            fixture.env.AUTH = Object.assign({} as Fetcher, { fetch: async () => Response.json(user) });
+            expect((await api("admin/queue", "GET", undefined, "admin")).status).toBe(user.emailVerified ? 403 : 401);
+        }
+        fixture.env.AUTH = Object.assign({} as Fetcher, { fetch: async () => Response.json(admin) });
+        expect((await api("admin/queue", "GET", undefined, "admin")).status).toBe(200);
     });
     it("rejects forged query regions and malformed cursors before SQL", async () => {
         await expect(listProducts(edgeRequest("/api/v1/products?region=intl"), fixture.env)).rejects.toMatchObject({ status: 400 });

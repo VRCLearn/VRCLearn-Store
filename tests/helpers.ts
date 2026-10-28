@@ -57,8 +57,8 @@ export function sqliteD1(database = new DatabaseSync(":memory:")) {
     return { binding, database, queries };
 }
 
-export const merchant: SessionUser = { id: "merchant-one", email: "merchant@example.com", name: "Maker", role: "user", emailVerified: true, banned: false, twoFactorEnabled: false, twoFactorVerified: false };
-export const admin: SessionUser = { id: "admin-one", email: "admin@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false, twoFactorEnabled: true, twoFactorVerified: true };
+export const merchant: SessionUser = { id: "merchant-one", email: "merchant@example.com", name: "Maker", role: "user", emailVerified: true, banned: false };
+export const admin: SessionUser = { id: "admin-one", email: "admin@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false };
 
 export function testEnvironment() {
     const sql = sqliteD1();
@@ -79,6 +79,7 @@ export function testEnvironment() {
     const quota = Object.assign({} as DurableObjectNamespace, { getByName: () => ({ fetch: async () => Response.json({ allowed: true }) }) });
     const env: AppEnv = {
         SKIP_DEPENDENCY_INSTALL: "1",
+        DEPLOYMENT_ENV: "test", RELEASE_SHA: "test",
         DB: sql.binding,
         STATE: Object.assign({} as KVNamespace, {
             async get(key: string, type?: string) { const value = state.get(key); return value === undefined ? null : type === "json" ? JSON.parse(value) : value; },

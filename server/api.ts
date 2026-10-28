@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { MerchantProduct, ProductInput, Region, SessionUser, ShopInput, Workspace } from "../shared/contracts";
 import type { AppEnv } from "./env";
-import { getProduct, getShop, listProducts } from "./catalog";
+import { getProduct, getShop, listProducts, listRecommendations } from "./catalog";
 import { deleteMediaKeys, deletePublicMedia, imageInfo, ownedMedia, publishMedia, releaseMediaStorage, reserveMediaStorage } from "./media";
 import { failure, HttpError, jsonBody, mode, readBytes, regionOf, reserve, secureOrigin, session, turnstile } from "./security";
 import { decisionSchema, productSchema, regionSchema, searchTokens, shopSchema, submitSchema } from "./validation";
@@ -132,15 +132,17 @@ async function finalize(env: AppEnv, revisionId: string): Promise<boolean> {
     }
     await mode(env, true);
     const content = JSON.parse(revision.content_json) as ProductInput;
+    if (content.r18 && regions.includes("cn")) throw new HttpError(400, "ADULT_CN_FORBIDDEN", "Adult products cannot be submitted or published in China mainland.");
     await publishMedia(env, revision.product_id, revisionId, submissionToken, revision.shop_id, content, regions);
     const timestamp = now();
     const guard = `EXISTS (SELECT 1 FROM products gp JOIN product_revisions gr ON gr.id = gp.latest_revision_id WHERE gp.id = ? AND gp.current_revision_id = ? AND gr.id = ? AND gr.status = 'pending' AND gr.submission_token = ?
+        AND ${regions.includes("cn") ? "COALESCE(json_extract(gr.content_json, '$.r18'), 0) = 0" : "1 = 1"}
         AND (SELECT COUNT(*) FROM publication_requests req JOIN regional_permissions perm ON perm.shop_id = gp.shop_id AND perm.region = req.region AND perm.status = 'approved' WHERE req.revision_id = gr.id AND req.status = 'approved' AND req.region IN (${regions.map(() => "?").join(",")})) = ?
         AND NOT EXISTS (SELECT 1 FROM publications old WHERE old.product_id = gp.id AND old.active = 1 AND old.revision_id != gr.id AND NOT EXISTS
             (SELECT 1 FROM publication_requests req JOIN regional_permissions perm ON perm.shop_id = gp.shop_id AND perm.region = req.region AND perm.status = 'approved' WHERE req.revision_id = gr.id AND req.region = old.region AND req.status = 'approved'))
         AND NOT EXISTS (SELECT 1 FROM shops s JOIN user_profiles owner ON owner.user_id = s.owner_user_id WHERE s.id = gp.shop_id AND owner.banned = 1))`;
     const args = [revision.product_id, revisionId, revisionId, submissionToken, ...regions, regions.length];
-    const statements: D1PreparedStatement[] = [env.DB.prepare(`UPDATE products SET current_revision_id = ?, updated_at = ? WHERE id = ? AND latest_revision_id = ? AND (current_revision_id IS ? OR current_revision_id = ?) AND EXISTS (SELECT 1 FROM product_revisions WHERE id = ? AND status = 'pending' AND submission_token = ?)
+    const statements: D1PreparedStatement[] = [env.DB.prepare(`UPDATE products SET current_revision_id = ?, updated_at = ? WHERE id = ? AND latest_revision_id = ? AND (current_revision_id IS ? OR current_revision_id = ?) AND EXISTS (SELECT 1 FROM product_revisions WHERE id = ? AND status = 'pending' AND submission_token = ? AND ${regions.includes("cn") ? "COALESCE(json_extract(content_json, '$.r18'), 0) = 0" : "1 = 1"})
         AND (SELECT COUNT(*) FROM publication_requests req JOIN regional_permissions perm ON perm.shop_id = products.shop_id AND perm.region = req.region AND perm.status = 'approved' WHERE req.revision_id = ? AND req.status = 'approved' AND req.region IN (${regions.map(() => "?").join(",")})) = ?
         AND NOT EXISTS (SELECT 1 FROM publications pub WHERE pub.product_id = products.id AND pub.active = 1 AND pub.revision_id != ? AND NOT EXISTS
             (SELECT 1 FROM publication_requests req JOIN regional_permissions perm ON perm.shop_id = products.shop_id AND perm.region = req.region AND perm.status = 'approved' WHERE req.revision_id = ? AND req.region = pub.region AND req.status = 'approved'))
@@ -188,7 +190,8 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
         const writing = !["GET", "HEAD"].includes(request.method);
         if (writing) secureOrigin(request, env);
         await mode(env);
-        if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "" });
+        if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "", deploymentEnvironment: env.DEPLOYMENT_ENV, releaseSha: env.RELEASE_SHA });
+        if (path === "recommendations" && request.method === "GET") return response(await listRecommendations(request, env));
         if (path === "me" && request.method === "GET") {
             try { return response({ user: await session(request, env) }); }
             catch (error) { if (error instanceof HttpError && error.status === 401) return response({ user: null }); throw error; }
@@ -321,6 +324,8 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                 if (parts[3] === "submit" && request.method === "POST") {
                     await mode(env, true);
                     const body = await jsonBody(request, submitSchema);
+                    const content = JSON.parse(revision.content_json) as ProductInput;
+                    if (content.r18 && body.regions.includes("cn")) throw new HttpError(400, "ADULT_CN_FORBIDDEN", "Adult products cannot be submitted or published in China mainland.");
                     const samePublishedRevision = revision.status === "published" && product.current_revision_id === revision.id;
                     if (revision.status === "rejected") throw new HttpError(409, "REVISION_REQUIRED", "Save a new revision before submitting a decided revision again.");
                     if (!["draft", "withdrawn"].includes(revision.status) && !samePublishedRevision) throw new HttpError(409, "INVALID_REVISION_STATE", "Only an editable revision or a new region of the current published revision can be submitted.");
@@ -339,6 +344,7 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                     const timestamp = now();
                     const submissionToken = crypto.randomUUID();
                     const changes = await env.DB.batch([env.DB.prepare(`UPDATE product_revisions SET status = 'pending', review_reason = '', updated_at = ?, submission_token = ? WHERE id = ? AND status = ?
+                        AND ${body.regions.includes("cn") ? "COALESCE(json_extract(content_json, '$.r18'), 0) = 0" : "1 = 1"}
                         AND EXISTS (SELECT 1 FROM products p JOIN shops s ON s.id = p.shop_id WHERE p.id = ? AND p.latest_revision_id = product_revisions.id AND s.current_revision_id IS NOT NULL AND (? = 0 OR p.current_revision_id = product_revisions.id)
                             AND NOT EXISTS (SELECT 1 FROM user_profiles owner WHERE owner.user_id = s.owner_user_id AND owner.banned = 1))
                         AND NOT EXISTS (SELECT 1 FROM publication_requests req WHERE req.revision_id = product_revisions.id AND req.status IN ('approved', 'rejected') AND NOT EXISTS
@@ -409,8 +415,9 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                     const revision = await env.DB.prepare("SELECT r.*, p.shop_id FROM product_revisions r JOIN products p ON p.id = r.product_id WHERE r.id = ? AND p.latest_revision_id = r.id AND r.status = 'pending'").bind(id).first<RevisionRow & { shop_id: string }>();
                     if (!revision) throw new HttpError(409, "REVIEW_CONFLICT", "This revision is no longer pending review.");
                     if (!revision.submission_token) throw new HttpError(409, "REVIEW_CONFLICT", "This revision is no longer pending review.");
+                    if (body.approve && body.region === "cn" && (JSON.parse(revision.content_json) as ProductInput).r18) throw new HttpError(400, "ADULT_CN_FORBIDDEN", "Adult products cannot be submitted or published in China mainland.");
                     const result = await env.DB.batch([env.DB.prepare(`UPDATE publication_requests SET status = ?, reason = ? WHERE revision_id = ? AND region = ? AND status = 'pending'
-                        AND EXISTS (SELECT 1 FROM product_revisions r JOIN products p ON p.latest_revision_id = r.id WHERE r.id = ? AND r.status = 'pending' AND r.submission_token = ?)
+                        AND EXISTS (SELECT 1 FROM product_revisions r JOIN products p ON p.latest_revision_id = r.id WHERE r.id = ? AND r.status = 'pending' AND r.submission_token = ? AND ${body.approve && body.region === "cn" ? "COALESCE(json_extract(r.content_json, '$.r18'), 0) = 0" : "1 = 1"})
                         AND EXISTS (SELECT 1 FROM regional_permissions WHERE shop_id = ? AND region = ? AND status = 'approved')`).bind(body.approve ? "approved" : "rejected", body.reason, id, body.region, id, revision.submission_token, revision.shop_id, body.region), ...(!body.approve ? settleRevision(env, id, revision.submission_token) : []), audit(env, user, "product.review", id, body.reason, body.region)]);
                     if (!result[0].meta.changes) {
                         const prior = await env.DB.prepare("SELECT req.status, r.status AS revision_status FROM publication_requests req JOIN product_revisions r ON r.id = req.revision_id WHERE req.revision_id = ? AND req.region = ?").bind(id, body.region).first<{ status: string; revision_status: string }>();

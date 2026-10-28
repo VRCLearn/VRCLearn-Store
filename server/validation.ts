@@ -13,7 +13,7 @@ export const productSchema = z.object({
     platforms: z.array(z.enum(["pc", "android"])).min(1).max(2).transform((items) => [...new Set(items)]),
     pricing: z.enum(["free", "paid"]), price: z.number().finite().min(0).max(100000000).nullable(),
     currency: z.string().regex(/^[A-Z]{3}$/).nullable(), purchaseUrl: https,
-    mediaIds: z.array(z.string().uuid()).max(10).transform((items) => [...new Set(items)]), r18: z.literal(false),
+    mediaIds: z.array(z.string().uuid()).max(10).transform((items) => [...new Set(items)]), r18: z.boolean(),
 }).strict().superRefine((value, ctx) => {
     if (value.pricing === "paid" && (value.price === null || value.price <= 0 || !value.currency)) {
         ctx.addIssue({ code: "custom", message: "Paid products need a positive price and currency." });

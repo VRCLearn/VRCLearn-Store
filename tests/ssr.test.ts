@@ -38,10 +38,33 @@ describe("region-scoped HTML and sitemap", () => {
         expect(response.headers.get("Cache-Control")).toBe("private, no-store");
         expect(response.headers.get("Content-Security-Policy")).toContain("nonce-");
     });
+    it.each(["production", "test"])("uses only %s media in the dynamic HTML image policy", async (environment) => {
+        const prefix = environment === "test" ? "test-" : "";
+        fixture.env.ORIGIN = `https://${prefix}store.vrclearn.com`;
+        fixture.env.MEDIA_ORIGIN = `https://${prefix}store-media.vrclearn.com`;
+        const request = new Request(`${fixture.env.ORIGIN}/en/products/${productId}`, { headers: { "CF-Connecting-IP": "203.0.113.10" } });
+        Object.defineProperty(request, "cf", { value: { country: "CN" } });
+        const response = await detailPage(context(request), "product");
+        expect(response.status).toBe(200);
+        const policy = response.headers.get("Content-Security-Policy") ?? "";
+        const sources = /\bimg-src\s+([^;]+)/.exec(policy)?.[1].trim().split(/\s+/);
+        expect(sources).toEqual(["'self'", "data:", fixture.env.MEDIA_ORIGIN]);
+    });
     it("does not share a mainland cached detail with an international request", async () => {
         expect((await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).status).toBe(200);
         await Promise.all(pending.splice(0));
         expect((await detailPage(context(edgeRequest(`/en/products/${productId}`, { country: "JP" })), "product")).status).toBe(404);
+    });
+    it("renders Adult classification in international HTML and excludes adult content from mainland HTML and sitemap", async () => {
+        fixture.database.prepare("UPDATE product_revisions SET content_json=json_set(content_json,'$.r18',json('true')) WHERE product_id=?").run(productId);
+        fixture.database.prepare("UPDATE regional_permissions SET region='intl' WHERE shop_id=?").run(shopId);
+        fixture.database.prepare("UPDATE publication_requests SET region='intl' WHERE revision_id=(SELECT current_revision_id FROM products WHERE id=?)").run(productId);
+        fixture.database.prepare("UPDATE publications SET region='intl' WHERE product_id=?").run(productId);
+        const response = await detailPage(context(edgeRequest(`/en/products/${productId}`, { country: "JP" })), "product");
+        expect(response.status).toBe(200);
+        expect(await response.text()).toContain("<p>Adult</p>");
+        expect((await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).status).toBe(404);
+        expect(await (await sitemapPage(context(edgeRequest("/sitemaps/en.xml")))).text()).not.toContain(productId);
     });
     it("sitemap contains only visible-region product URLs and rejects alternate hosts", async () => {
         const mainland = await sitemapPage(context(edgeRequest("/sitemaps/en.xml")));
