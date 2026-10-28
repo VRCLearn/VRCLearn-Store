@@ -1,5 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import type { Product, Workspace } from "../../shared/contracts";
+import { messages } from "../../src/i18n";
+import jsQR from "jsqr";
 
 // Material tabs expose their roles through ElementInternals, which Playwright's
 // DOM role selector does not read. Check Chromium's real accessibility tree.
@@ -278,3 +280,92 @@ test("API failure preserves the static storefront and account failures are visib
     await expect(page.getByRole("alert")).toContainText("unavailable");
     await expect(page.getByRole("alert")).not.toContainText("Service unavailable");
 });
+
+for (const locale of ["zh-CN", "en", "ja"] as const) {
+    test(`MFA setup guides enrollment, handles invalid codes and saves recovery codes in ${locale}`, async ({ page }, testInfo) => {
+        const t = messages(locale);
+        let verification: Record<string, unknown> | undefined;
+        let verified = false;
+        await page.route("**/api/**", (route) => {
+            const path = new URL(route.request().url()).pathname;
+            if (path === "/api/v1/me") return route.fulfill({ json: { user: {
+                id: "local-mfa-owner", email: "local-mfa@example.com", name: "Local MFA test", emailVerified: true,
+                role: "admin", banned: false, twoFactorEnabled: verified, twoFactorVerified: verified,
+            } } });
+            if (path === "/api/auth/two-factor/enable") return route.fulfill({ json: {
+                method: "totp",
+                // Public RFC test material, never a real account enrollment.
+                totpURI: "otpauth://totp/Local:local-mfa%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Local&digits=6&period=30",
+                backupCodes: ["local-test-recovery-code"],
+            } });
+            if (path === "/api/auth/two-factor/verify-totp") {
+                verification = route.request().postDataJSON();
+                if (verification?.code === "654321") {
+                    verified = true;
+                    return route.fulfill({ json: { status: true } });
+                }
+                return route.fulfill({ status: 401, json: { code: "INVALID_CODE", message: "Invalid code" } });
+            }
+            return route.fulfill({ status: 404, json: { code: "NOT_FOUND", message: "Unexpected test request" } });
+        });
+        await page.goto(`/${locale}/account`);
+        await expect(page.getByRole("heading", { name: t.mfaPrepare, exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaIntro, { exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaAppHint, { exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaPasswordHint, { exact: true })).toBeVisible();
+        await page.locator('input[type="password"]').fill("local-only-mfa-test-password");
+        await page.getByRole("button", { name: t.enableMfa, exact: true }).click();
+        const qr = page.getByRole("img", { name: t.mfaQr, exact: true });
+        await expect(qr).toBeVisible();
+        await expect(page.getByRole("heading", { name: t.mfaScan, exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: t.mfaConfirm, exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaSetup, { exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaCodeSource, { exact: true })).toBeVisible();
+        await expect(page.getByText("local-test-recovery-code", { exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: t.mfaDownloadCodes, exact: true })).toHaveCount(0);
+        expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+        await page.screenshot({ path: testInfo.outputPath("mfa-setup.png"), fullPage: true });
+        const bitmap = await qr.evaluate(async (element) => {
+            const image = new Image();
+            image.src = "data:image/svg+xml;charset=utf-8," + encodeURIComponent(new XMLSerializer().serializeToString(element));
+            await image.decode();
+            const canvas = document.createElement("canvas");
+            canvas.width = 256; canvas.height = 256;
+            const context = canvas.getContext("2d")!;
+            context.drawImage(image, 0, 0, 256, 256);
+            return Array.from(context.getImageData(0, 0, 256, 256).data);
+        });
+        const decoded = jsQR(new Uint8ClampedArray(bitmap), 256, 256);
+        expect(decoded?.data).toBe("otpauth://totp/Local:local-mfa%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=Local&digits=6&period=30");
+        await expect(page.getByText("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", { exact: true })).not.toBeVisible();
+        await page.getByText(t.mfaManual, { exact: true }).click();
+        await expect(page.getByText("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", { exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaManualHint, { exact: true })).toBeVisible();
+        await expect(page.getByRole("link", { name: t.mfaOpenApp, exact: true })).toHaveAttribute("href", decoded!.data);
+        await page.getByRole("textbox", { name: t.authenticator, exact: true }).fill("012345");
+        await page.getByRole("button", { name: t.verify, exact: true }).click();
+        await expect(page.getByRole("alert")).toContainText(t.invalidVerificationCode);
+        expect(verification).toMatchObject({ code: "012345", trustDevice: false });
+        await expect(page.getByRole("alert")).not.toContainText(t.error);
+        await expect(page.getByRole("alert")).not.toContainText("Invalid code");
+        await page.getByText(t.mfaTroubleshoot, { exact: true }).click();
+        await expect(page.getByText(t.mfaTroubleshootHint, { exact: true })).toBeVisible();
+        await page.getByRole("textbox", { name: t.authenticator, exact: true }).fill("654321");
+        await page.getByRole("button", { name: t.verify, exact: true }).click();
+        await expect(page.getByRole("status")).toContainText(t.mfaEnabled);
+        await expect(page.getByRole("heading", { name: t.recoveryCodes, exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaRecoveryHint, { exact: true })).toBeVisible();
+        await expect(page.getByText(t.mfaNextLogin, { exact: true })).toBeVisible();
+        await expect(qr).toHaveCount(0);
+        await expect(page.getByText("GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ", { exact: true })).toHaveCount(0);
+        const downloadPromise = page.waitForEvent("download");
+        await page.getByRole("button", { name: t.mfaDownloadCodes, exact: true }).click();
+        const download = await downloadPromise;
+        expect(download.suggestedFilename()).toBe("vrclearn-store-recovery-codes.txt");
+        const contents = await download.createReadStream();
+        let text = "";
+        for await (const chunk of contents) text += chunk.toString();
+        expect(text).toBe(`${t.store}\nlocal-mfa@example.com\n\nlocal-test-recovery-code\n`);
+        await page.screenshot({ path: testInfo.outputPath("mfa-complete.png"), fullPage: true });
+    });
+}

@@ -15,7 +15,7 @@ export function localizedError(error: unknown, t: Record<MessageKey, string>): s
         INVALID_PASSWORD: "invalidCredentials", USER_ALREADY_EXISTS: "emailAlreadyUsed",
         USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "emailAlreadyUsed", INVALID_TOKEN: "expiredLink",
         TOKEN_EXPIRED: "expiredLink", INVALID_TWO_FACTOR_COOKIE: "expiredLink", INVALID_OTP: "invalidVerificationCode",
-        INVALID_TOTP: "invalidVerificationCode", INVALID_BACKUP_CODE: "invalidVerificationCode",
+        INVALID_TOTP: "invalidVerificationCode", INVALID_CODE: "invalidVerificationCode", INVALID_BACKUP_CODE: "invalidVerificationCode",
         ADMIN_MFA_REQUIRED: "mfaRequired", ACCOUNT_RESTRICTED: "accountRestricted",
         REGION_UNKNOWN: "regionUnavailable", CLIENT_UNVERIFIED: "regionUnavailable",
         PRODUCT_NOT_FOUND: "unavailable", SHOP_NOT_FOUND: "shopUnavailable",
