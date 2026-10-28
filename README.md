@@ -28,8 +28,12 @@ npm.cmd run test:browser
 - `functions/`、`edge/`：有限动态路由、地区隔离的 HTML 缓存与安全输出。
 - `server/`：共享业务服务、D1 查询、审核与 R2 图片发布。
 - `worker/`：Better Auth、原生密码计算、会话管理、Durable Object 配额与有界维护任务。
+- `control/`：独立账户费用监控、状态分发及指定入口紧急停机。
+- `deployment/`、`scripts/release*.mjs`：环境清单、隔离预检与串行自动发布。
 - `migrations/`：业务和认证 D1 迁移。
 - `public/_routes.json`：明确指定动态入口。首页、搜索界面、后台界面与静态资源不会执行 Pages Functions。
+
+首页自动推荐最多 6 件当前地区可见的已上架商品，初期从本区最近 96 件活动上架商品中按资料完整度排序，算法后续完善；仅加载时请求一次，空位和请求失败均保留静态内容。静态横幅支持横向滑动与按钮切换，后续可承载广告内容。收藏与商家工作台位于头像下拉菜单，展开菜单不查询登录态。
 
 商品和店铺详情在源 HTML 中输出内容与元数据，客户端沿用同一份初始数据。服务端按大陆 CN／其他地区过滤；界面语言不会改变商品区。动态 HTML 只在应用控制的地区缓存键下缓存，对外响应不允许共享代理缓存。
 
@@ -41,13 +45,16 @@ npm.cmd run test:browser
 
 ## 配置与内部测试
 
-内部测试版入口为 [store.vrclearn.com](https://store.vrclearn.com)。Access 保护正式站点、媒体以及默认和预览 Pages 入口，仅允许 `@vrclearn.com` 邮箱域；同时提供新邮箱一次性验证码（OTP）和现有 Cloudflare 登录。邮箱 OTP 已实际验证可用，Cloudflare 登录来源另外受其账户成员限制。Access 准入不授予商店账户或管理权限。商店使用专用 D1、两个 R2 桶、KV、辅助 Worker、Turnstile 和秘密绑定；实际资源 ID 已填入配置，秘密不进入仓库。
+项目保持生产候选、测试两套独立业务环境：`main` 对应 [store.vrclearn.com](https://store.vrclearn.com)，`test` 对应 [test-store.vrclearn.com](https://test-store.vrclearn.com)。测试资源统一以 `test-` 开头，D1、R2、KV、DO、认证、限流、Turnstile 和 Access 分别独立，不复制生产账户或媒体。两套继续保持内部 Access 保护，用户范围为 `@vrclearn.com`；Access 准入不授予商店管理权限。
 
-`npm.cmd run preflight` 检查资源引用和入口约束，当前配置已通过。`deployment/edge-policies.json` 记录已应用的媒体分区、缓存与预置紧急规则；两条紧急封锁规则正常时保持禁用。预检不能代替远端验收，也不授权部署。
+两分支共用业务代码与 `deployment/environments.json` 环境清单。`test` 验证后直接 PR 合入 `main`，不改环境配置、不复制数据，生产重新校验和构建。Cloudflare Workers Builds 协调迁移、辅助 Worker 和 Pages 原生 Git 发布；Pages 独立推送／预览触发关闭，不使用 GitHub Actions 或 Pages Direct Upload。
 
-Pages 从 Cloudflare 原生连接本仓库，生产分支为 `main`；使用 `.node-version`、锁文件和 `npm ci && npm test && npm run build && npm run preflight` 构建到 `dist`，Pages 部署不依赖 GitHub Actions，不从含未提交改动的本地工作区部署。分支预览自动部署关闭。资源管理优先使用 `cf`；辅助 Worker 的独立发布与 Secret 注入见 [运维说明](docs/operations.md)。本地 CLI 缓存、凭据和验收产物不纳入版本控制。
+环境配置由 `scripts/environment.mjs` 生成，错误分支、项目身份、SHA 或跨环境业务引用会停止发布。发布锁和迁移校验和独立存储，结果不明时先读回、人工解锁，不盲目重试。预检和本地测试不能证明远端配置或部署已完成；完整命令、首次切换及恢复见 [运维说明](docs/operations.md)，资源边界见 [架构](docs/architecture.md)。
 
-自动费用监控已通过真实 Cron 验证 V1 账户账单来源，并在人工确认后恢复正常。验收采样估算的 5 美元为 Workers Paid 基础费预留，已返回计费行的累计按量费用为零；费用接口按日更新，保护机制不构成账单硬上限。完整验收范围与未验证项见 [费用与容量](docs/costs.md)、[运维说明](docs/operations.md) 和 [辅助 Worker](worker/README.md)。
+账户总费用由独立监控 Worker 统一保护，包含同账户的其他项目，保留 10 美元告警、15 美元受限、18 美元维护和人工恢复规则。状态向两环境分发，单独测试资源故障只闭锁测试；账户预算触发则两套共同保护。监控延迟及其他费用意味着这不是账单硬上限。见 [费用与容量](docs/costs.md)。
+
+正式公开或移除 Access 前，必须提醒清空内测数据库并核对测试媒体及配额范围；实际删除另行取得明确授权。
+
 
 ## License
 

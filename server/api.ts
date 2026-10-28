@@ -190,7 +190,7 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
         const writing = !["GET", "HEAD"].includes(request.method);
         if (writing) secureOrigin(request, env);
         await mode(env);
-        if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "" });
+        if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "", deploymentEnvironment: env.DEPLOYMENT_ENV, releaseSha: env.RELEASE_SHA });
         if (path === "recommendations" && request.method === "GET") return response(await listRecommendations(request, env));
         if (path === "me" && request.method === "GET") {
             try { return response({ user: await session(request, env) }); }

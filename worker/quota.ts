@@ -1,6 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
 import { reserveQuota, validQuotaRequest, type QuotaTransaction } from "./quota-core";
-import type { SupportEnv } from "./env";
 import { readBounded } from "./http";
 
 export const QUOTA_LEDGER_MAX_ENTRIES = 100_000;
@@ -31,8 +30,8 @@ const SCHEMA = `
     BEGIN UPDATE quota_ledger SET entries = entries - 1 WHERE id = 1; END;
 `;
 
-export class QuotaGate extends DurableObject<SupportEnv> {
-    constructor(ctx: DurableObjectState, env: SupportEnv) {
+export class QuotaGate extends DurableObject<unknown> {
+    constructor(ctx: DurableObjectState, env: unknown) {
         super(ctx, env);
         this.ctx.storage.sql.exec(SCHEMA);
     }

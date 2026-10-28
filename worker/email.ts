@@ -3,7 +3,7 @@ import { digestKey } from "./http";
 import { validQuotaResponse, type QuotaLimit, type QuotaResult } from "./quota-core";
 import { serviceEnabled } from "../edge/budget";
 
-export async function reserve(env: SupportEnv, key: string, limits: QuotaLimit[]): Promise<QuotaResult> {
+export async function reserve(env: Pick<SupportEnv, "QUOTA">, key: string, limits: QuotaLimit[]): Promise<QuotaResult> {
     const result = await env.QUOTA.getByName("global").fetch(new Request("https://quota.internal/reserve", {
         method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ key, limits }),
     }));
@@ -30,11 +30,13 @@ export async function sendAccountEmail(env: SupportEnv, to: string, subject: str
     const target = new URL(url);
     if (target.origin !== env.ORIGIN) throw new Error("INVALID_EMAIL_LINK");
     const escaped = target.href.replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] ?? character);
+    const testing = env.DEPLOYMENT_ENV === "test";
+    const title = testing ? `[TEST] ${subject}` : subject;
     await env.EMAIL.send({
-        from: { email: env.EMAIL_FROM, name: "VRCLearn Store" },
+        from: { email: env.EMAIL_FROM, name: testing ? "VRCLearn Store Test" : "VRCLearn Store" },
         to,
-        subject,
-        text: `${subject}\n\n${target.href}\n\nIf you did not request this email, you can ignore it.`,
-        html: `<p>${subject}</p><p><a href="${escaped}">Continue to VRCLearn Store</a></p><p>If you did not request this email, you can ignore it.</p>`,
+        subject: title,
+        text: `${title}\n\n${target.href}\n\nIf you did not request this email, you can ignore it.`,
+        html: `<p>${title}</p><p><a href="${escaped}">Continue to VRCLearn Store</a></p><p>If you did not request this email, you can ignore it.</p>`,
     });
 }

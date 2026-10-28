@@ -79,6 +79,7 @@ export function testEnvironment() {
     const quota = Object.assign({} as DurableObjectNamespace, { getByName: () => ({ fetch: async () => Response.json({ allowed: true }) }) });
     const env: AppEnv = {
         SKIP_DEPENDENCY_INSTALL: "1",
+        DEPLOYMENT_ENV: "test", RELEASE_SHA: "test",
         DB: sql.binding,
         STATE: Object.assign({} as KVNamespace, {
             async get(key: string, type?: string) { const value = state.get(key); return value === undefined ? null : type === "json" ? JSON.parse(value) : value; },

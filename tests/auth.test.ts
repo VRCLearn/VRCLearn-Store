@@ -13,16 +13,14 @@ function fixture() {
     const value = testEnvironment();
     value.database.exec(readFileSync("migrations/0002_auth.sql", "utf8"));
     value.database.exec(readFileSync("migrations/0004_remove_mfa.sql", "utf8"));
-    const messages: { to?: unknown; text?: string }[] = [];
+    const messages: { from?: { email: string; name: string }; to?: unknown; text?: string; html?: string; subject?: string }[] = [];
     const env: SupportEnv = {
         ...value.env,
         QUOTA: Object.assign({} as SupportEnv["QUOTA"], value.env.QUOTA),
         BETTER_AUTH_SECRET: "only-for-tests-24c41d71-e740-4542-ad8c-12d206952f17",
-        CF_MONITOR_TOKEN: "test-monitor-token", CF_API_TOKEN: "test-rule-token",
         AUTH_RATE_LIMIT: Object.assign({} as RateLimit, { limit: async () => ({ success: true }) }),
         EMAIL: Object.assign({} as SendEmail, { send: async (message: { text?: string }) => { messages.push(message); return { messageId: "test" }; } }),
-        EMAIL_FROM: "noreply@vrclearn.com", ALERT_EMAIL: "", CF_ACCOUNT_ID: "", CF_ZONE_ID: "", EDGE_RULESET_ID: "", EDGE_RULE_ID: "", EDGE_MEDIA_RULE_ID: "",
-        D1_DATABASE_ID: "", PAGES_PROJECT_NAME: "vrclearn-store", SUPPORT_SCRIPT_NAME: "vrclearn-store-support", PRIVATE_BUCKET_NAME: "private", PUBLIC_BUCKET_NAME: "public",
+        EMAIL_FROM: "noreply@vrclearn.com",
     };
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
         if (String(input) !== "https://challenges.cloudflare.com/turnstile/v0/siteverify") throw new Error("Unexpected external request");
@@ -199,6 +197,25 @@ describe("email authentication and administrator access", () => {
         f.state.set("budget:state", JSON.stringify({ mode: "normal", updatedAt: new Date(Date.now() - 1_800_001).toISOString() }));
         await expect(sendAccountEmail(f.env, "a@example.com", "Verify", `${f.env.ORIGIN}/verify`)).rejects.toThrow("EMAIL_PAUSED");
         expect(f.messages).toHaveLength(0);
+    });
+
+    it("sends marked test emails to arbitrary registered addresses using only the test origin and sender", async () => {
+        const f = fixture();
+        try {
+            f.env.DEPLOYMENT_ENV = "test";
+            f.env.ORIGIN = "https://test-store.vrclearn.com";
+            f.env.EMAIL_FROM = "test-noreply@vrclearn.com";
+            await sendAccountEmail(f.env, "registered@external.example", "Verify your email", `${f.env.ORIGIN}/api/auth/verify-email?token=test&callbackURL=%2Fen%2Faccount`);
+            expect(f.messages).toHaveLength(1);
+            expect(f.messages[0]).toMatchObject({
+                from: { email: "test-noreply@vrclearn.com", name: "VRCLearn Store Test" },
+                to: "registered@external.example", subject: "[TEST] Verify your email",
+                text: expect.stringContaining("https://test-store.vrclearn.com/api/auth/verify-email"),
+                html: expect.stringContaining("[TEST] Verify your email"),
+            });
+            await expect(sendAccountEmail(f.env, "registered@external.example", "Verify", "https://store.vrclearn.com/api/auth/verify-email?token=wrong-environment")).rejects.toThrow("INVALID_EMAIL_LINK");
+            expect(f.messages).toHaveLength(1);
+        } finally { f.database.close(); }
     });
 
     it.each([

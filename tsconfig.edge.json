@@ -4,5 +4,5 @@
         "lib": ["ES2023"],
         "types": ["node", "@cloudflare/workers-types"]
     },
-    "include": ["server", "shared", "worker", "functions", "edge", "tests/*.test.ts", "vitest.config.ts", "pages-env.d.ts", "worker-env.d.ts"]
+    "include": ["server", "shared", "worker", "control", "functions", "edge", "tests/*.test.ts", "vitest.config.ts", "pages-env.d.ts", "worker-env.d.ts", "control-env.d.ts"]
 }

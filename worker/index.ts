@@ -1,7 +1,6 @@
 import type { SupportEnv } from "./env";
 import { createAuth, getSessionUser, handleAuth } from "./auth";
 import { authFailure, failure } from "./http";
-import { runMonitor } from "./monitor";
 import { cleanupStaleMedia } from "../edge/cleanup";
 import { cleanupExpiredAuth } from "./session-cleanup";
 import { serviceEnabled } from "../edge/budget";
@@ -27,7 +26,7 @@ export default {
     },
     async scheduled(_controller, env, ctx): Promise<void> {
         ctx.waitUntil((async () => {
-            try { if ((await runMonitor(env)).mode === "maintenance") return; }
+            try { if (!await serviceEnabled(env)) return; }
             catch { console.warn(JSON.stringify({ event: "budget_check_failed" })); return; }
             try { await cleanupStaleMedia(env); }
             catch { console.warn(JSON.stringify({ event: "media_cleanup_failed" })); }
