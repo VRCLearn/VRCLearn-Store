@@ -1,10 +1,10 @@
 import { betterAuth } from "better-auth";
 import type { SessionUser } from "../shared/contracts";
+import { authRouteMethod } from "../shared/auth-routes";
 import type { SupportEnv } from "./env";
-import { sendAccountEmail, reserve, accountEmailsEnabled } from "./email";
+import { reserve } from "./quota-client";
 import { authFailure, digestKey, readBounded } from "./http";
 import { hashPassword, verifyPassword } from "./password";
-import { serviceEnabled } from "../edge/budget";
 
 function buildAuth(env: SupportEnv) {
     if (!env.BETTER_AUTH_SECRET || env.BETTER_AUTH_SECRET.length < 32) throw new Error("AUTH_SECRET_NOT_CONFIGURED");
@@ -21,21 +21,11 @@ function buildAuth(env: SupportEnv) {
         verification: { modelName: "auth_verification" },
         emailAndPassword: {
             enabled: true,
-            requireEmailVerification: true,
-            autoSignIn: false,
+            requireEmailVerification: false,
+            autoSignIn: true,
             minPasswordLength: 12,
             maxPasswordLength: 128,
-            resetPasswordTokenExpiresIn: 1800,
-            revokeSessionsOnPasswordReset: true,
             password: { hash: hashPassword, verify: verifyPassword },
-            sendResetPassword: async ({ user, url }) => sendAccountEmail(env, user.email, "Reset your VRCLearn Store password", url),
-        },
-        emailVerification: {
-            sendOnSignUp: true,
-            sendOnSignIn: false,
-            autoSignInAfterVerification: false,
-            expiresIn: 3600,
-            sendVerificationEmail: async ({ user, url }) => sendAccountEmail(env, user.email, "Verify your VRCLearn Store email", url),
         },
         rateLimit: { enabled: false },
         advanced: {
@@ -49,13 +39,13 @@ function buildAuth(env: SupportEnv) {
 type Auth = ReturnType<typeof buildAuth>;
 // Immutable service configuration can be reused. User/session/request objects are
 // created by Better Auth per call and are never stored here.
-const authServices = new WeakMap<D1Database, { signature: string; state: KVNamespace; email: SendEmail; quota: SupportEnv["QUOTA"]; auth: Auth }>();
+const authServices = new WeakMap<D1Database, { signature: string; auth: Auth }>();
 export function createAuth(env: SupportEnv): Auth {
-    const signature = JSON.stringify([env.ORIGIN, env.ENVIRONMENT, env.BETTER_AUTH_SECRET, env.EMAIL_FROM]);
+    const signature = JSON.stringify([env.ORIGIN, env.ENVIRONMENT, env.BETTER_AUTH_SECRET]);
     const cached = authServices.get(env.DB);
-    if (cached && cached.signature === signature && cached.state === env.STATE && cached.email === env.EMAIL && cached.quota === env.QUOTA) return cached.auth;
+    if (cached && cached.signature === signature) return cached.auth;
     const auth = buildAuth(env);
-    authServices.set(env.DB, { signature, state: env.STATE, email: env.EMAIL, quota: env.QUOTA, auth });
+    authServices.set(env.DB, { signature, auth });
     return auth;
 }
 interface UserProfile { role: string; banned: number }
@@ -68,17 +58,12 @@ export async function getSessionUser(auth: Auth, env: SupportEnv, headers: Heade
         id: result.user.id,
         email: result.user.email,
         name: result.user.name,
-        emailVerified: result.user.emailVerified,
         role: profile?.role === "admin" ? "admin" : "user",
         banned: Boolean(profile?.banned),
     };
 }
 
-const TOKEN_PATHS = new Set(["/sign-up/email", "/sign-in/email", "/request-password-reset", "/send-verification-email"]);
-const AUTH_PATHS = new Set([
-    ...TOKEN_PATHS, "/verify-email", "/reset-password", "/get-session", "/sign-out",
-    "/list-sessions", "/revoke-session", "/revoke-sessions", "/revoke-other-sessions", "/change-password", "/update-user",
-]);
+const TOKEN_PATHS = new Set(["/sign-up/email", "/sign-in/email"]);
 
 export async function verifyTurnstile(env: SupportEnv, request: Request, token: unknown): Promise<boolean> {
     if (typeof token !== "string" || token.length < 1 || token.length > 2048 || !env.TURNSTILE_SECRET_KEY) return false;
@@ -96,17 +81,20 @@ export async function verifyTurnstile(env: SupportEnv, request: Request, token: 
 }
 
 export async function handleAuth(request: Request, env: SupportEnv): Promise<Response> {
-    if (!await serviceEnabled(env)) return authFailure("SERVICE_PAUSED", "Account operations are temporarily paused", 503, 60);
     const url = new URL(request.url);
     const path = url.pathname.slice("/api/auth".length);
-    const passwordResetLink = request.method === "GET" && /^\/reset-password\/[A-Za-z0-9_-]{8,256}$/.test(path);
-    if ((!AUTH_PATHS.has(path) && !passwordResetLink) || !["GET", "POST"].includes(request.method)) return authFailure("NOT_FOUND", "Endpoint not found", 404);
+    const method = authRouteMethod(url.pathname);
+    if (!method) return authFailure("NOT_FOUND", "Endpoint not found", 404);
+    if (request.method !== method) {
+        const response = authFailure("METHOD_NOT_ALLOWED", "Method not allowed", 405);
+        response.headers.set("Allow", method);
+        return response;
+    }
     if (request.method === "POST" && request.headers.get("origin") !== env.ORIGIN) return authFailure("INVALID_ORIGIN", "Origin rejected", 403);
     const ip = request.headers.get("cf-connecting-ip");
     if (!ip && env.ENVIRONMENT === "production") return authFailure("IP_UNAVAILABLE", "Trusted client address is missing", 403);
     const ipKey = await digestKey(ip ?? "local");
-    const operation = passwordResetLink ? "/reset-password" : path;
-    if (!(await env.AUTH_RATE_LIMIT.limit({ key: `${ipKey}:${operation}` })).success) return authFailure("RATE_LIMITED", "Please try again later", 429, 60);
+    if (!(await env.AUTH_RATE_LIMIT.limit({ key: `${ipKey}:${path}` })).success) return authFailure("RATE_LIMITED", "Please try again later", 429, 60);
     let data: Record<string, unknown> = {};
     let forwarded = request;
     if (request.method === "POST") {
@@ -118,9 +106,6 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
             data = input as Record<string, unknown>;
         } catch { return authFailure("INVALID_JSON", "Invalid JSON", 400); }
         if (TOKEN_PATHS.has(path)) {
-            if (path !== "/sign-in/email" && !await accountEmailsEnabled(env)) {
-                return authFailure("FEATURE_PAUSED", "Account email operations are temporarily paused", 503);
-            }
             if (!await verifyTurnstile(env, request, request.headers.get("x-turnstile-token") ?? data.turnstileToken)) return authFailure("CHALLENGE_FAILED", "Verification failed", 403);
             if (typeof data.email === "string") {
                 const emailKey = await digestKey(data.email.trim().toLowerCase());
@@ -132,6 +117,7 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
                 if (!limit.allowed) return authFailure("RATE_LIMITED", "Please try again later", 429, limit.retryAfter);
             }
         }
+        if (path === "/change-password") data.revokeOtherSessions = true;
         const headers = new Headers(request.headers);
         headers.set("Content-Type", "application/json");
         headers.delete("Content-Length");

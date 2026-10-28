@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AppEnv } from "../server/env";
 import { imageInfo } from "../server/media";
-import { failure, HttpError, isPublicHttps, mode, readBytes, regionOf, reserve, secureOrigin, turnstile } from "../server/security";
+import { failure, HttpError, isPublicHttps, readBytes, regionOf, reserve, secureOrigin, turnstile } from "../server/security";
 import { ftsQuery, productSchema, searchTokens } from "../server/validation";
 
 const env = { ORIGIN: "https://store.vrclearn.com", ENVIRONMENT: "production", TURNSTILE_SECRET_KEY: "test-only-secret" } as AppEnv;
@@ -81,7 +81,7 @@ describe("search input and content contract", () => {
     });
 });
 
-describe("verification and stale metering", () => {
+describe("human verification", () => {
     it("binds Turnstile proof to hostname and action", async () => {
         const mock = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ success: true, hostname: "store.vrclearn.com", action: "submit" }));
         await expect(turnstile(new Request(env.ORIGIN), env, "proof", "upload")).rejects.toMatchObject({ code: "VERIFICATION_FAILED" });
@@ -91,36 +91,7 @@ describe("verification and stale metering", () => {
         await expect(turnstile(new Request(env.ORIGIN), env, "proof", "upload")).resolves.toBeUndefined();
         mock.mockRestore();
     });
-    it("blocks expensive production operations when costs are unknown or stale", async () => {
-        const production = { ...env, STATE: { get: vi.fn().mockResolvedValue(null), getWithMetadata: vi.fn(), put: vi.fn(), delete: vi.fn(), list: vi.fn() } as KVNamespace };
-        await expect(mode(production, true)).rejects.toMatchObject({ code: "SERVICE_PAUSED" });
-        await expect(mode(production)).resolves.toBeUndefined();
-        production.STATE.get = vi.fn().mockResolvedValue({ mode: "normal", updatedAt: new Date(Date.now() - 1900000).toISOString() });
-        await expect(mode(production, true)).rejects.toMatchObject({ code: "SERVICE_PAUSED" });
-        production.STATE.get = vi.fn().mockResolvedValue({ mode: "normal", updatedAt: new Date().toISOString() });
-        await expect(mode(production, true)).resolves.toBeUndefined();
-    });
-    it.each([
-        null,
-        { mode: "unknown", updatedAt: new Date().toISOString() },
-        { mode: "normal", updatedAt: "not-a-date" },
-        { mode: "normal", updatedAt: new Date(Date.now() + 120_000).toISOString() },
-        { mode: "restricted", updatedAt: new Date().toISOString() },
-    ])("keeps low-cost reads available but blocks production writes for invalid or restricted state %j", async (value) => {
-        const production = { ...env, STATE: Object.assign({} as KVNamespace, { get: vi.fn().mockResolvedValue(value) }) };
-        await expect(mode(production)).resolves.toBeUndefined();
-        await expect(mode(production, true)).rejects.toMatchObject({ status: 503, code: "SERVICE_PAUSED" });
-    });
-    it("blocks all operations when KV cannot establish the maintenance state", async () => {
-        const production = { ...env, STATE: Object.assign({} as KVNamespace, { get: vi.fn().mockRejectedValue(new Error("KV unavailable")) }) };
-        await expect(mode(production)).rejects.toMatchObject({ status: 503, code: "SERVICE_PAUSED" });
-        await expect(mode(production, true)).rejects.toMatchObject({ status: 503, code: "SERVICE_PAUSED" });
-    });
-    it("keeps maintenance active even when its timestamp has expired", async () => {
-        const production = { ...env, STATE: Object.assign({} as KVNamespace, { get: vi.fn().mockResolvedValue({ mode: "maintenance", updatedAt: "invalid" }) }) };
-        await expect(mode(production)).rejects.toMatchObject({ code: "SERVICE_PAUSED" });
-        await expect(mode(production, true)).rejects.toMatchObject({ code: "SERVICE_PAUSED" });
-    });
+
 });
 
 describe("quota denial responses", () => {

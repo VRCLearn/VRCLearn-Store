@@ -3,7 +3,7 @@ import type { MerchantProduct, ProductInput, Region, SessionUser, ShopInput, Wor
 import type { AppEnv } from "./env";
 import { getProduct, getShop, listProducts, listRecommendations } from "./catalog";
 import { deleteMediaKeys, deletePublicMedia, imageInfo, ownedMedia, publishMedia, releaseMediaStorage, reserveMediaStorage } from "./media";
-import { failure, HttpError, jsonBody, mode, readBytes, regionOf, reserve, secureOrigin, session, turnstile } from "./security";
+import { failure, HttpError, jsonBody, readBytes, regionOf, reserve, secureOrigin, session, turnstile } from "./security";
 import { decisionSchema, productSchema, regionSchema, searchTokens, shopSchema, submitSchema } from "./validation";
 
 interface ShopRow { id: string; owner_user_id: string; current_revision_id: string | null }
@@ -13,6 +13,22 @@ const now = () => new Date().toISOString();
 const idSchema = z.string().uuid();
 const regionBody = z.object({ region: regionSchema }).strict();
 const regionReasonBody = z.object({ region: regionSchema, reason: z.string().trim().min(1).max(2000) }).strict();
+const apiRoutes: { path: RegExp; methods: readonly string[] }[] = [
+    { path: /^(?:config|recommendations|me|products|favorites|merchant\/workspace|admin\/queue)$/, methods: ["GET"] },
+    { path: /^products\/[^/]+$/, methods: ["GET"] },
+    { path: /^shops\/[^/]+(?:\/products)?$/, methods: ["GET"] },
+    { path: /^merchant\/media\/[^/]+$/, methods: ["GET"] },
+    { path: /^favorites\/[^/]+$/, methods: ["PUT", "DELETE"] },
+    { path: /^(?:reports|merchant\/(?:enroll|permissions|products|uploads))$/, methods: ["POST"] },
+    { path: /^merchant\/shop$/, methods: ["PUT"] },
+    { path: /^merchant\/products\/[^/]+$/, methods: ["PUT"] },
+    { path: /^merchant\/products\/[^/]+\/(?:submit|withdraw|unpublish)$/, methods: ["POST"] },
+    { path: /^admin\/(?:permissions|revisions|shops)\/[^/]+\/review$/, methods: ["POST"] },
+    { path: /^admin\/products\/[^/]+\/unpublish$/, methods: ["POST"] },
+    { path: /^admin\/shops\/[^/]+\/revoke$/, methods: ["POST"] },
+    { path: /^admin\/users\/[^/]+\/ban$/, methods: ["POST"] },
+    { path: /^admin\/reports\/[^/]+\/resolve$/, methods: ["POST"] },
+];
 
 function response(data: unknown, status = 200): Response {
     return Response.json(data, { status, headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -130,7 +146,6 @@ async function finalize(env: AppEnv, revisionId: string): Promise<boolean> {
         await env.DB.batch(settleRevision(env, revisionId, submissionToken));
         return !!await env.DB.prepare("SELECT 1 AS active FROM publications pub JOIN products p ON p.id = pub.product_id AND p.current_revision_id = pub.revision_id WHERE pub.product_id = ? AND pub.revision_id = ? AND pub.active = 1 LIMIT 1").bind(revision.product_id, revisionId).first();
     }
-    await mode(env, true);
     const content = JSON.parse(revision.content_json) as ProductInput;
     if (content.r18 && regions.includes("cn")) throw new HttpError(400, "ADULT_CN_FORBIDDEN", "Adult products cannot be submitted or published in China mainland.");
     await publishMedia(env, revision.product_id, revisionId, submissionToken, revision.shop_id, content, regions);
@@ -185,11 +200,17 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
     const requestId = crypto.randomUUID();
     try {
         const url = new URL(request.url);
-        const path = url.pathname.replace(/^\/api\/v1\/?/, "").replace(/\/$/, "");
+        const path = url.pathname.startsWith("/api/v1/") ? url.pathname.slice("/api/v1/".length).replace(/\/$/, "") : "";
+        const route = apiRoutes.find((route) => route.path.test(path));
+        if (!route) throw new HttpError(404, "ENDPOINT_NOT_FOUND", "This API endpoint could not be found.");
+        if (!route.methods.includes(request.method)) {
+            const result = failure(new HttpError(405, "METHOD_NOT_ALLOWED", "The request method is not supported by this endpoint."), requestId);
+            result.headers.set("Allow", route.methods.join(", "));
+            return result;
+        }
         const parts = path.split("/");
         const writing = !["GET", "HEAD"].includes(request.method);
         if (writing) secureOrigin(request, env);
-        await mode(env);
         if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "", deploymentEnvironment: env.DEPLOYMENT_ENV, releaseSha: env.RELEASE_SHA });
         if (path === "recommendations" && request.method === "GET") return response(await listRecommendations(request, env));
         if (path === "me" && request.method === "GET") {
@@ -280,7 +301,6 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                 return response({ id }, 201);
             }
             if (path === "merchant/products" && request.method === "POST") {
-                await mode(env, true);
                 const body = await jsonBody(request, productSchema);
                 if (body.mediaIds.length) throw new HttpError(400, "UPLOAD_AFTER_CREATE", "Create the product before attaching images.");
                 const count = await env.DB.prepare("SELECT COUNT(*) AS count FROM products WHERE shop_id = ?").bind(shop.id).first<{ count: number }>();
@@ -298,7 +318,6 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                 const revision = await env.DB.prepare("SELECT * FROM product_revisions WHERE id = ?").bind(product.latest_revision_id).first<RevisionRow>();
                 if (!revision) throw new HttpError(409, "REVISION_UNAVAILABLE", "The latest revision is unavailable.");
                 if (parts.length === 3 && request.method === "PUT") {
-                    await mode(env, true);
                     if (revision.status === "pending") throw new HttpError(409, "WITHDRAW_REQUIRED", "Withdraw the pending revision before editing.");
                     const body = await jsonBody(request, productSchema);
                     await ownedMedia(env, id, shop.id, body.mediaIds);
@@ -322,7 +341,6 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                     return response({ id, revisionId });
                 }
                 if (parts[3] === "submit" && request.method === "POST") {
-                    await mode(env, true);
                     const body = await jsonBody(request, submitSchema);
                     const content = JSON.parse(revision.content_json) as ProductInput;
                     if (content.r18 && body.regions.includes("cn")) throw new HttpError(400, "ADULT_CN_FORBIDDEN", "Adult products cannot be submitted or published in China mainland.");
@@ -375,7 +393,6 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                 }
             }
             if (path === "merchant/uploads" && request.method === "POST") {
-                await mode(env, true);
                 const productId = idSchema.parse(request.headers.get("X-Product-Id"));
                 const product = await productFor(env, shop.id, productId);
                 const revision = await env.DB.prepare("SELECT status FROM product_revisions WHERE id = ?").bind(product.latest_revision_id).first<{ status: string }>();

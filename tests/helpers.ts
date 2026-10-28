@@ -5,6 +5,7 @@ import type { SessionUser } from "../shared/contracts";
 
 export function sqliteD1(database = new DatabaseSync(":memory:")) {
     const queries: { sql: string; values: SQLInputValue[] }[] = [];
+    let batchQueue = Promise.resolve();
     function prepare(sql: string, values: SQLInputValue[] = []): D1PreparedStatement {
         const execute = (rows: boolean) => {
             queries.push({ sql, values });
@@ -38,32 +39,37 @@ export function sqliteD1(database = new DatabaseSync(":memory:")) {
     const binding = Object.assign({} as D1Database, {
         prepare,
         async batch(statements: D1PreparedStatement[]) {
-            database.exec("SAVEPOINT d1batch");
-            try {
-                const results = [];
-                for (const statement of statements) {
-                    // D1 batch retains rows from SELECT/PRAGMA/RETURNING statements.
-                    results.push(await statement.all());
+            // A D1 batch is atomic. Serialize batches on this single connection so
+            // concurrent requests cannot release or roll back each other's savepoint.
+            const result = batchQueue.then(async () => {
+                database.exec("SAVEPOINT d1batch");
+                try {
+                    const results = [];
+                    for (const statement of statements) {
+                        // D1 batch retains rows from SELECT/PRAGMA/RETURNING statements.
+                        results.push(await statement.all());
+                    }
+                    database.exec("RELEASE d1batch");
+                    return results;
+                } catch (error) {
+                    database.exec("ROLLBACK TO d1batch; RELEASE d1batch");
+                    throw error;
                 }
-                database.exec("RELEASE d1batch");
-                return results;
-            } catch (error) {
-                database.exec("ROLLBACK TO d1batch; RELEASE d1batch");
-                throw error;
-            }
+            });
+            batchQueue = result.then(() => undefined, () => undefined);
+            return result;
         },
         async exec(sql: string) { database.exec(sql); return { count: 1, duration: 0 }; }
     });
     return { binding, database, queries };
 }
 
-export const merchant: SessionUser = { id: "merchant-one", email: "merchant@example.com", name: "Maker", role: "user", emailVerified: true, banned: false };
-export const admin: SessionUser = { id: "admin-one", email: "admin@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false };
+export const merchant: SessionUser = { id: "merchant-one", email: "merchant@example.com", name: "Maker", role: "user", banned: false };
+export const admin: SessionUser = { id: "admin-one", email: "admin@example.com", name: "Reviewer", role: "admin", banned: false };
 
 export function testEnvironment() {
     const sql = sqliteD1();
-    sql.database.exec(readFileSync("migrations/0001_business.sql", "utf8"));
-    sql.database.exec(readFileSync("migrations/0003_revision_storage.sql", "utf8"));
+    sql.database.exec(readFileSync("migrations/0001_initial.sql", "utf8"));
     const state = new Map<string, string>();
     const privateMedia = new Map<string, Uint8Array>();
     const publicMedia = new Map<string, Uint8Array>();
@@ -78,7 +84,6 @@ export function testEnvironment() {
     });
     const quota = Object.assign({} as DurableObjectNamespace, { getByName: () => ({ fetch: async () => Response.json({ allowed: true }) }) });
     const env: AppEnv = {
-        SKIP_DEPENDENCY_INSTALL: "1",
         DEPLOYMENT_ENV: "test", RELEASE_SHA: "test",
         DB: sql.binding,
         STATE: Object.assign({} as KVNamespace, {
@@ -88,7 +93,7 @@ export function testEnvironment() {
         PRIVATE_MEDIA: bucket(privateMedia), PUBLIC_MEDIA: bucket(publicMedia), QUOTA: quota,
         AUTH: Object.assign({} as Fetcher, { fetch: async (request: Request) => Response.json(users.get(request.headers.get("x-test-user") ?? "") ?? null) }),
         ASSETS: Object.assign({} as Fetcher, { fetch: async () => new Response(readFileSync("index.html", "utf8")) }),
-        ORIGIN: "https://store.vrclearn.com", MEDIA_ORIGIN: "https://store-media.vrclearn.com", ENVIRONMENT: "test", TURNSTILE_SITE_KEY: "test", TURNSTILE_SECRET_KEY: "test", CF_ZONE_ID: ""
+        ORIGIN: "https://store.vrclearn.com", MEDIA_ORIGIN: "https://store-media.vrclearn.com", ENVIRONMENT: "test", TURNSTILE_SITE_KEY: "test", TURNSTILE_SECRET_KEY: "test"
     };
     return { ...sql, env, state, privateMedia, publicMedia };
 }

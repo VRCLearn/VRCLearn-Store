@@ -5,9 +5,11 @@ import { getProduct, getShop, sitemap } from "../server/catalog";
 import { HttpError, regionOf } from "../server/security";
 import { escapeHtml, safeJson, safeMarkdown } from "./html";
 import { allowedHost, secureResponse, unavailable } from "./respond";
-import { serviceEnabled } from "./budget";
-
-type EdgeContext = EventContext<AppEnv, string, unknown>;
+interface EdgeContext {
+    request: Request;
+    env: AppEnv;
+    ctx: Pick<ExecutionContext, "waitUntil">;
+}
 
 function outward(response: Response, head = false): Response {
     const result = secureResponse(new Response(head ? null : response.body, response));
@@ -24,6 +26,7 @@ async function cacheKey(request: Request, env: AppEnv): Promise<Request> {
     const url = new URL(request.url);
     url.search = "";
     url.searchParams.set("__region", regionOf(request));
+    url.searchParams.set("__release", env.RELEASE_SHA);
     const version = await env.STATE.get("catalog:version");
     url.searchParams.set("__version", version ?? "initial");
     return new Request(url, { method: "GET" });
@@ -43,19 +46,21 @@ export async function detailPage(context: EdgeContext, kind: "product" | "shop")
     if (!["GET", "HEAD"].includes(request.method)) return secureResponse(new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } }));
     if (!allowedHost(request, env)) return secureResponse(new Response("Not found", { status: 404 }));
     try {
-        const pieces = new URL(request.url).pathname.split("/").filter(Boolean);
+        const pieces = new URL(request.url).pathname.split("/").slice(1);
         const locale = pieces[0] as Locale;
-        if (!LOCALES.includes(locale) || pieces.length !== 3) throw new HttpError(404, "NOT_FOUND", "Page not found.");
-        if (!await serviceEnabled(env)) return secureResponse(unavailable());
+        if (!LOCALES.includes(locale) || pieces.length !== 3 || pieces[1] !== (kind === "product" ? "products" : "shops")) throw new HttpError(404, "NOT_FOUND", "Page not found.");
+        let id: string;
+        try { id = decodeURIComponent(pieces[2]); }
+        catch { throw new HttpError(404, "NOT_FOUND", "Page not found."); }
+        if (!id || /[\/\\\u0000-\u001f\u007f]/.test(id)) throw new HttpError(404, "NOT_FOUND", "Page not found.");
         const key = await cacheKey(request, env);
         const cached = await caches.default.match(key);
         if (cached) return outward(cached, request.method === "HEAD");
-        const id = decodeURIComponent(pieces[2]);
         const data = kind === "product" ? await getProduct(request, env, id) : await getShop(request, env, id);
         const title = kind === "product" ? (data as Product).title : (data as Shop).name;
         const description = kind === "product" ? (data as Product).summary : (data as Shop).description.slice(0, 200);
         const canonical = `${env.ORIGIN}/${locale}/${kind === "product" ? "products" : "shops"}/${encodeURIComponent(id)}`;
-        const shell = await env.ASSETS.fetch(new Request(`${env.ORIGIN}/index.html`));
+        const shell = await env.ASSETS.fetch(new Request(`${env.ORIGIN}/${locale}`));
         if (!shell.ok) throw new Error("Static shell unavailable");
         let html = await shell.text();
         const nonce = crypto.randomUUID().replaceAll("-", "");
@@ -75,37 +80,36 @@ export async function detailPage(context: EdgeContext, kind: "product" | "shop")
             "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=0, s-maxage=60",
             "Content-Security-Policy": csp(nonce, env.MEDIA_ORIGIN), "Vary": "Accept-Encoding"
         } }));
-        context.waitUntil(caches.default.put(key, response.clone()));
+        context.ctx.waitUntil(caches.default.put(key, response.clone()));
         return outward(response, request.method === "HEAD");
     } catch (error) {
         const status = error instanceof HttpError ? error.status : 503;
-        return secureResponse(new Response(status === 404 ? "Page not found." : "This page is unavailable.", {
-            status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex" }
+        return secureResponse(new Response(request.method === "HEAD" ? null : status === 404 ? "Page not found." : "This page is unavailable.", {
+            status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store", "X-Robots-Tag": "noindex", ...(status === 503 ? { "Retry-After": "60" } : {}) }
         }));
     }
 }
 
 export async function sitemapPage(context: EdgeContext): Promise<Response> {
     const { request, env } = context;
-    if (!["GET", "HEAD"].includes(request.method)) return new Response(null, { status: 405 });
-    if (!allowedHost(request, env)) return new Response("Not found", { status: 404 });
+    if (!["GET", "HEAD"].includes(request.method)) return secureResponse(new Response(null, { status: 405, headers: { Allow: "GET, HEAD" } }));
+    if (!allowedHost(request, env)) return secureResponse(new Response("Not found", { status: 404 }));
     try {
         regionOf(request);
-        if (!await serviceEnabled(env)) return unavailable();
         const path = new URL(request.url).pathname;
         if (path === "/sitemap.xml") {
             const body = `<?xml version="1.0" encoding="UTF-8"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${LOCALES.map((locale) => `<sitemap><loc>${env.ORIGIN}/sitemaps/${locale}.xml</loc></sitemap>`).join("")}</sitemapindex>`;
             return secureResponse(new Response(request.method === "HEAD" ? null : body, { headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "no-store" } }));
         }
         const locale = path.match(/^\/sitemaps\/(en|zh-CN|ja)\.xml$/)?.[1] as Locale | undefined;
-        if (!locale) return new Response("Not found", { status: 404 });
+        if (!locale) return secureResponse(new Response("Not found", { status: 404 }));
         const key = await cacheKey(request, env);
         const cached = await caches.default.match(key);
         if (cached) return outward(cached, request.method === "HEAD");
         const urls = await sitemap(request, env, locale);
         const body = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.map((url) => `<url><loc>${escapeHtml(url)}</loc></url>`).join("")}</urlset>`;
         const response = secureResponse(new Response(body, { headers: { "Content-Type": "application/xml; charset=utf-8", "Cache-Control": "public, max-age=0, s-maxage=60" } }));
-        context.waitUntil(caches.default.put(key, response.clone()));
+        context.ctx.waitUntil(caches.default.put(key, response.clone()));
         return outward(response, request.method === "HEAD");
     } catch (error) {
         return secureResponse(unavailable(error instanceof HttpError ? error.status : 503));

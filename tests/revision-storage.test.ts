@@ -249,19 +249,22 @@ describe("retained revision storage", () => {
         expect(fixture.database.prepare("SELECT row_count FROM revision_storage_shops WHERE shop_id = ?").get(second.id)?.row_count).toBe(0);
         assertAllocation();
     });
-    it("initializes existing retained UTF-8 content during migration", () => {
+    it("initializes empty allocation ledgers and accounts UTF-8 content from the first insert", () => {
         const database = new DatabaseSync(":memory:");
         try {
-            database.exec(readFileSync("migrations/0001_business.sql", "utf8"));
+            database.exec(readFileSync("migrations/0001_initial.sql", "utf8"));
+            expect(database.prepare("SELECT row_count, content_bytes FROM revision_storage_total").get()).toEqual({ row_count: 0, content_bytes: 0 });
+            expect(database.prepare("SELECT * FROM revision_storage_shops").all()).toEqual([]);
             database.prepare("INSERT INTO shops (id, owner_user_id, created_at) VALUES ('shop', 'owner', 'now')").run();
+            expect(database.prepare("SELECT row_count, content_bytes FROM revision_storage_shops WHERE shop_id = 'shop'").get()).toEqual({ row_count: 0, content_bytes: 0 });
             database.prepare("INSERT INTO shop_revisions (id, shop_id, content_json, status, created_at) VALUES ('shop-revision', 'shop', ?, 'approved', 'now')").run('{"name":"中文"}');
             database.prepare("INSERT INTO products (id, shop_id, latest_revision_id, created_at, updated_at) VALUES ('product', 'shop', 'revision', 'now', 'now')").run();
             database.prepare("INSERT INTO product_revisions (id, product_id, content_json, status, created_at, updated_at) VALUES ('revision', 'product', ?, 'published', 'now', 'now')").run('{"name":"é"}');
-            database.exec(readFileSync("migrations/0003_revision_storage.sql", "utf8"));
             const expected = Buffer.byteLength('{"name":"中文"}') + Buffer.byteLength('{"name":"é"}');
-            expect(database.prepare("SELECT row_count, content_bytes FROM revision_storage_total").get()).toMatchObject({ row_count: 2, content_bytes: expected });
-            expect(database.prepare("SELECT row_count, content_bytes FROM revision_storage_shops WHERE shop_id = 'shop'").get()).toMatchObject({ row_count: 2, content_bytes: expected });
+            expect(database.prepare("SELECT row_count, content_bytes FROM revision_storage_total").get()).toEqual({ row_count: 2, content_bytes: expected });
+            expect(database.prepare("SELECT row_count, content_bytes FROM revision_storage_shops WHERE shop_id = 'shop'").get()).toEqual({ row_count: 2, content_bytes: expected });
             expect(database.prepare("SELECT global_row_limit, global_byte_limit, shop_row_limit, shop_byte_limit FROM revision_storage_policy").get()).toMatchObject({ global_row_limit: 100000, global_byte_limit: 1073741824, shop_row_limit: 2000, shop_byte_limit: 33554432 });
+            expect(database.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
         } finally { database.close(); }
     });
 });

@@ -10,21 +10,23 @@ function normalizedOrigin(value) {
     return url;
 }
 
-export async function staticBuildContext(variables = process.env, { manifestPath, localConfigPath = resolve(repositoryRoot, "deployment/local-pages.jsonc") } = {}) {
+export async function staticBuildContext(variables = process.env, { manifestPath, localConfigPath = resolve(repositoryRoot, "deployment/local-app.jsonc") } = {}) {
     const environment = variables.DEPLOYMENT_ENV || "local";
-    const nativePages = variables.CF_PAGES === "1";
     const workersBuild = Boolean(variables.WORKERS_CI_BRANCH);
     if (environment === "local") {
-        if (nativePages || workersBuild) throw new Error("Cloud builds require an explicit production or test identity");
+        if (workersBuild || variables.WORKER_NAME) throw new Error("Cloud builds require an explicit production or test identity");
         const config = JSON.parse(await readFile(localConfigPath, "utf8"));
-        if (config.vars?.DEPLOYMENT_ENV !== "local" || config.vars?.ENVIRONMENT !== "development") throw new Error("Local media policy requires the local Pages configuration");
+        if (config.vars?.DEPLOYMENT_ENV !== "local" || config.vars?.ENVIRONMENT !== "development") throw new Error("Local media policy requires the local Worker configuration");
         const media = normalizedOrigin(config.vars.MEDIA_ORIGIN);
         if (!["localhost", "127.0.0.1", "[::1]"].includes(media.hostname)) throw new Error("Local media policy cannot allow a cloud media origin");
         return { environment, mediaOrigin: media.origin };
     }
     const deployment = await loadDeployment(environment, { manifestPath });
-    if (nativePages && (variables.CF_PAGES_BRANCH !== deployment.branch || variables.PAGES_PROJECT_NAME !== deployment.pagesProject)) throw new Error("Static Pages policy does not match the fixed project and branch");
-    if (workersBuild && (variables.WORKERS_CI_BRANCH !== deployment.branch || variables.PAGES_PROJECT_NAME !== deployment.pagesProject)) throw new Error("Static build policy does not match the fixed project and branch");
+    if (variables.WORKERS_CI_BRANCH !== deployment.branch || variables.WORKER_NAME !== deployment.appWorker) throw new Error("Static build policy does not match the fixed Worker and branch");
+    if (!/^[a-f0-9]{40}$/.test(variables.RELEASE_SHA ?? "") || variables.WORKERS_CI_COMMIT_SHA !== variables.RELEASE_SHA) throw new Error("Static build checkout does not match its immutable release SHA");
+    if (!variables.VRCLEARN_APP_CONFIG) throw new Error("Static build requires its generated Worker configuration");
+    const config = JSON.parse(await readFile(variables.VRCLEARN_APP_CONFIG, "utf8"));
+    if (config.name !== deployment.appWorker || config.vars?.DEPLOYMENT_ENV !== environment || config.vars?.ORIGIN !== deployment.origin || config.vars?.MEDIA_ORIGIN !== deployment.mediaOrigin || config.vars?.RELEASE_SHA !== variables.RELEASE_SHA) throw new Error("Static media policy does not match the generated Worker configuration");
     return { environment, mediaOrigin: deployment.mediaOrigin };
 }
 

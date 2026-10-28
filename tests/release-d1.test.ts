@@ -2,53 +2,58 @@ import { readFileSync } from "node:fs";
 import { type SQLInputValue } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { sqliteD1 } from "./helpers";
-// @ts-ignore Native Node scripts are tested directly.
+// @ts-ignore Native Node release adapter.
 import { createReleaseIO } from "../scripts/release-cloudflare.mjs";
+// @ts-ignore Native Node migration policy.
+import { migrationPlan } from "../scripts/migration-policy.mjs";
 
-function controlFixture() {
-    const control = sqliteD1();
-    const business = sqliteD1();
-    control.database.exec(readFileSync("deployment/release-control.sql", "utf8"));
-    business.database.exec("CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL);");
-    const api = async (path: string, { body }: { body: { batch: { sql: string; params: SQLInputValue[] }[] } }) => {
-        const db = path.includes("/database/control/") ? control : business;
-        return db.binding.batch(body.batch.map(({ sql, params }) => db.binding.prepare(sql).bind(...params)));
-    };
-    const makeIO = (environment: "production" | "test") => createReleaseIO({ environment, accountId: "test-account", releaseDatabaseId: "control", d1DatabaseId: "business" }, {}, { api });
+function fixture() {
+    const control = sqliteD1(), business = sqliteD1(); control.database.exec(readFileSync("deployment/release-control.sql", "utf8"));
+    const api = async (path: string, { body }: { body: { batch: { sql: string; params: SQLInputValue[] }[] } }) => { const db = path.includes("/database/control/") ? control : business; return db.binding.batch(body.batch.map(({ sql, params }) => db.binding.prepare(sql).bind(...params))); };
+    const makeIO = () => createReleaseIO({ environment: "test", accountId: "test-account", releaseDatabaseId: "control", d1DatabaseId: "business" }, {}, { api });
     return { control, business, makeIO, close() { control.database.close(); business.database.close(); } };
 }
-
-describe("release-control D1 coordination", () => {
-    it("admits one concurrent publisher per environment while allowing the other environment independently", async () => {
-        const fixture = controlFixture();
+describe("new release-control database", () => {
+    it("admits one publisher, never steals an expired lease and does not let an old job unlock a newer one", async () => {
+        const test = fixture();
         try {
-            const first = fixture.makeIO("test"), second = fixture.makeIO("test"), production = fixture.makeIO("production");
+            const first = test.makeIO(), second = test.makeIO();
             expect(await Promise.all([first.acquireLease("one", "a".repeat(40), Date.now() + 60000), second.acquireLease("two", "b".repeat(40), Date.now() + 60000)])).toEqual([true, false]);
-            expect(await production.acquireLease("three", "c".repeat(40), Date.now() + 60000)).toBe(true);
-            await expect(second.mark("two", { stage: "worker", sha: "b".repeat(40), expiresAt: Date.now() + 60000 })).rejects.toThrow("LEASE_LOST");
-            expect(await first.assertLease("one", "a".repeat(40))).toBe(true);
-        } finally { fixture.close(); }
+            await first.failLease("one", { stage: "app", uncertain: true, supportVersionId: "support" });
+            expect(await second.acquireLease("two", "b".repeat(40), Date.now() + 60000)).toBe(false);
+            test.control.database.prepare("UPDATE release_leases SET lease_id='two',release_sha=?,outcome='running' WHERE environment='test'").run("b".repeat(40));
+            await first.failLease("one", { stage: "app", uncertain: false });
+            await expect(first.completeLease("one", "a".repeat(40), { appVersionId: "old", supportVersionId: "old" })).rejects.toThrow("LEASE_LOST");
+            expect(await second.assertLease("two", "b".repeat(40))).toBe(true);
+        } finally { test.close(); }
     });
-    it("never steals an expired or unconfirmed lease, and an old job cannot release a newer job's lock", async () => {
-        const fixture = controlFixture();
+    it("initializes the fixed consolidated schema only when the business database is empty", async () => {
+        const test = fixture();
         try {
-            const io = fixture.makeIO("test");
-            await io.acquireLease("old", "a".repeat(40), Date.now() - 1);
-            await io.failLease("old", { stage: "pages", uncertain: true, pagesDeploymentId: "unknown-page" });
-            expect(await io.acquireLease("new", "b".repeat(40), Date.now() + 60000)).toBe(false);
-            fixture.control.database.prepare("UPDATE release_leases SET lease_id='new',release_sha=?,outcome='running',expires_at=? WHERE environment='test'").run("b".repeat(40), Date.now() + 60000);
-            await io.failLease("old", { stage: "pages", uncertain: false });
-            await expect(io.completeLease("old", "a".repeat(40), "old-page")).rejects.toThrow("LEASE_LOST");
-            expect(await io.assertLease("new", "b".repeat(40))).toBe(true);
-        } finally { fixture.close(); }
+            const io = test.makeIO(); expect(await io.appliedMigrations()).toEqual([]);
+            const plan = migrationPlan([{ name: "0001_initial.sql", sql: readFileSync("migrations/0001_initial.sql", "utf8") }], []);
+            await io.applyMigration(plan[0]); await io.recordMigration(plan[0]);
+            expect(await io.appliedMigrations()).toEqual(["0001_initial.sql"]);
+            expect(test.business.database.prepare("SELECT count(*) AS count FROM auth_user").get()?.count).toBe(0);
+            expect(test.business.database.prepare("SELECT count(*) AS count FROM products").get()?.count).toBe(0);
+            expect(test.business.database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type='trigger'").get()?.count).toBeGreaterThan(0);
+            expect(Object.keys(await io.migrationChecksums())).toEqual(["0001_initial.sql"]);
+        } finally { test.close(); }
     });
-    it("rolls back schema changes together with a failed migration-ledger insert", async () => {
-        const fixture = controlFixture();
+    it("does not bootstrap over untracked existing tables", async () => {
+        const test = fixture();
+        try { test.business.database.exec("CREATE TABLE existing(id TEXT)"); await expect(test.makeIO().appliedMigrations()).rejects.toThrow("MIGRATION_DATABASE_NOT_EMPTY"); } finally { test.close(); }
+    });
+    it("does not treat an untracked view as an empty schema", async () => {
+        const test = fixture();
+        try { test.business.database.exec("CREATE VIEW leftover AS SELECT 'old' AS value"); await expect(test.makeIO().appliedMigrations()).rejects.toThrow("MIGRATION_DATABASE_NOT_EMPTY"); } finally { test.close(); }
+    });
+    it("rolls back an additive schema change with a failed migration ledger insert", async () => {
+        const test = fixture();
         try {
-            fixture.business.database.prepare("INSERT INTO d1_migrations(name) VALUES(?)").run("0005_widgets.sql");
-            await expect(fixture.makeIO("test").applyMigration({ name: "0005_widgets.sql", statements: ["CREATE TABLE widgets(id TEXT);"] })).rejects.toThrow();
-            expect(fixture.business.database.prepare("SELECT name FROM sqlite_master WHERE name='widgets'").get()).toBeUndefined();
-            expect(fixture.business.database.prepare("SELECT count(*) AS count FROM d1_migrations").get()?.count).toBe(1);
-        } finally { fixture.close(); }
+            test.business.database.exec("CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY, name TEXT UNIQUE NOT NULL); INSERT INTO d1_migrations(name) VALUES('0002_widgets.sql');");
+            await expect(test.makeIO().applyMigration({ name: "0002_widgets.sql", statements: ["CREATE TABLE widgets(id TEXT);"] })).rejects.toThrow();
+            expect(test.business.database.prepare("SELECT name FROM sqlite_master WHERE name='widgets'").get()).toBeUndefined();
+        } finally { test.close(); }
     });
 });

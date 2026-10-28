@@ -1,24 +1,13 @@
 {
-    "description": "Required zone policies for both environments and account emergency shutdown.",
     "mediaAccess": {
         "action": "block",
         "enabled": true,
-        "expression": "((http.host eq \"store-media.vrclearn.com\" and http.request.uri.path ne \"/cdn-cgi/access/authorized\" and (ip.src.country in {\"XX\" \"T1\"} or (ip.src.country eq \"CN\" and not starts_with(http.request.uri.path, \"/cn/\")) or (ip.src.country ne \"CN\" and not starts_with(http.request.uri.path, \"/intl/\")))) or (http.host eq \"test-store-media.vrclearn.com\" and http.request.uri.path ne \"/cdn-cgi/access/authorized\" and (ip.src.country in {\"XX\" \"T1\"} or (ip.src.country eq \"CN\" and not starts_with(http.request.uri.path, \"/cn/\")) or (ip.src.country ne \"CN\" and not starts_with(http.request.uri.path, \"/intl/\")))))"
-    },
-    "emergencyDynamicStop": {
-        "action": "block",
-        "enabled": false,
-        "expression": "((http.host eq \"store.vrclearn.com\" and (starts_with(http.request.uri.path, \"/api/\") or http.request.uri.path contains \"/products/\" or http.request.uri.path contains \"/shops/\" or http.request.uri.path eq \"/sitemap.xml\" or starts_with(http.request.uri.path, \"/sitemaps/\"))) or (http.host eq \"test-store.vrclearn.com\" and (starts_with(http.request.uri.path, \"/api/\") or http.request.uri.path contains \"/products/\" or http.request.uri.path contains \"/shops/\" or http.request.uri.path eq \"/sitemap.xml\" or starts_with(http.request.uri.path, \"/sitemaps/\"))))"
-    },
-    "emergencyMediaStop": {
-        "action": "block",
-        "enabled": false,
-        "expression": "(http.host eq \"store-media.vrclearn.com\" or http.host eq \"test-store-media.vrclearn.com\")"
+        "expression": "(http.host eq \"test-store-media.vrclearn.com\" and http.request.uri.path ne \"/cdn-cgi/access/authorized\" and (ip.src.country in {\"XX\" \"T1\"} or (ip.src.country eq \"CN\" and not starts_with(http.request.uri.path, \"/cn/\")) or (ip.src.country ne \"CN\" and not starts_with(http.request.uri.path, \"/intl/\"))))"
     },
     "mediaCache": {
         "action": "set_cache_settings",
         "enabled": true,
-        "expression": "((http.host eq \"store-media.vrclearn.com\" and (starts_with(http.request.uri.path, \"/cn/\") or starts_with(http.request.uri.path, \"/intl/\"))) or (http.host eq \"test-store-media.vrclearn.com\" and (starts_with(http.request.uri.path, \"/cn/\") or starts_with(http.request.uri.path, \"/intl/\"))))",
+        "expression": "(http.host eq \"test-store-media.vrclearn.com\" and (starts_with(http.request.uri.path, \"/cn/\") or starts_with(http.request.uri.path, \"/intl/\")))",
         "action_parameters": {
             "cache": true,
             "edge_ttl": {

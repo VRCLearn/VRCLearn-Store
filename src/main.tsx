@@ -11,7 +11,6 @@ import { HomeBanners } from "./home-banners";
 import "./styles.css";
 
 const AccountPage = lazy(() => import("./account").then((module) => ({ default: module.AccountPage })));
-const ResetPasswordPage = lazy(() => import("./account").then((module) => ({ default: module.ResetPasswordPage })));
 const AdminPage = lazy(() => import("./admin").then((module) => ({ default: module.AdminPage })));
 const MerchantPage = lazy(() => import("./merchant").then((module) => ({ default: module.MerchantPage })));
 const FavoritesPage = lazy(() => import("./catalog").then((module) => ({ default: module.FavoritesPage })));
@@ -131,4 +130,4 @@ function NotFound() {
 }
 
 const host = document.getElementById("root") ?? document.getElementById("detail-root");
-if (host) createRoot(host).render(<ThemeProvider><BrowserRouter><Routes><Route element={<Shell />}><Route path="/" element={<Navigate to="/en" replace />} /><Route path="/:locale" element={<HomePage />} /><Route path="/:locale/search" element={<SearchPage />} /><Route path="/:locale/products/:id" element={<ProductPage />} /><Route path="/:locale/shops/:id" element={<ShopPage />} /><Route path="/:locale/favorites" element={<FavoritesPage />} /><Route path="/:locale/account" element={<AccountPage />} /><Route path="/:locale/reset-password" element={<ResetPasswordPage />} /><Route path="/:locale/merchant" element={<MerchantPage />} /><Route path="/:locale/admin" element={<AdminPage />} />{(["privacy", "terms", "security", "maintenance"] as const).map((kind) => <Route key={kind} path={`/:locale/${kind}`} element={<InformationPage kind={kind} />} />)}<Route path="*" element={<NotFound />} /></Route></Routes></BrowserRouter></ThemeProvider>);
+if (host) createRoot(host).render(<ThemeProvider><BrowserRouter><Routes><Route element={<Shell />}><Route path="/" element={<Navigate to="/en" replace />} /><Route path="/:locale" element={<HomePage />} /><Route path="/:locale/search" element={<SearchPage />} /><Route path="/:locale/products/:id" element={<ProductPage />} /><Route path="/:locale/shops/:id" element={<ShopPage />} /><Route path="/:locale/favorites" element={<FavoritesPage />} /><Route path="/:locale/account" element={<AccountPage />} /><Route path="/:locale/merchant" element={<MerchantPage />} /><Route path="/:locale/admin" element={<AdminPage />} />{(["privacy", "terms", "security", "maintenance"] as const).map((kind) => <Route key={kind} path={`/:locale/${kind}`} element={<InformationPage kind={kind} />} />)}<Route path="*" element={<NotFound />} /></Route></Routes></BrowserRouter></ThemeProvider>);

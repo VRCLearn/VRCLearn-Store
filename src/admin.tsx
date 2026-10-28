@@ -59,11 +59,11 @@ export function AdminPage() {
     const [section, setSection] = useState("products");
     const action = useAction();
     async function load() { setQueue(await api<ReviewQueue>("/admin/queue")); }
-    useEffect(() => { void action.run(async () => { const current = await currentUser(); setUser(current); if (current?.role === "admin" && current.emailVerified && !current.banned) await load(); }); }, []);
+    useEffect(() => { void action.run(async () => { const current = await currentUser(); setUser(current); if (current?.role === "admin" && !current.banned) await load(); }); }, []);
     return <>
-        <div className="page-heading"><div className="section-heading"><div><p className="eyebrow">VRCLearn Store</p><h1>{t.admin}</h1></div>{user?.role === "admin" && user.emailVerified && !user.banned && <ActionButton busy={action.busy} variant="outlined" onClick={() => { void action.run(load); }}>{t.refresh}</ActionButton>}</div></div>
+        <div className="page-heading"><div className="section-heading"><div><p className="eyebrow">VRCLearn Store</p><h1>{t.admin}</h1></div>{user?.role === "admin" && !user.banned && <ActionButton busy={action.busy} variant="outlined" onClick={() => { void action.run(load); }}>{t.refresh}</ActionButton>}</div></div>
         <Notice error={action.error} />
-        {action.busy && !queue ? <Busy /> : !user || user.role !== "admin" || !user.emailVerified || user.banned ? <SignInPrompt admin /> : queue ? <>
+        {action.busy && !queue ? <Busy /> : !user || user.role !== "admin" || user.banned ? <SignInPrompt admin /> : queue ? <>
             <Tabs tabs={[{ value: "products", label: `${t.productsQueue} (${queue.products.length})` }, { value: "permissions", label: `${t.permissionsQueue} (${queue.permissions.length})` }, { value: "shops", label: `${t.shopsQueue} (${queue.shops.length})` }, { value: "reports", label: `${t.reportsQueue} (${queue.reports.length})` }]} value={section} onChange={setSection} />
             <div className="admin-layout"><div className="review-queues">
                 {section === "permissions" && <QueueSection title={t.permissionsQueue} count={queue.permissions.length}>{queue.permissions.map((application) => <Card role="article" className="review-item" key={application.id}><h3>{application.shopName} · {t[application.region]}</h3><small>{t.shopId}: {application.shopId}</small><p>{application.reason}</p><Decision endpoint={`/admin/permissions/${encodeURIComponent(application.id)}/review`} onDone={load} /></Card>)}</QueueSection>}

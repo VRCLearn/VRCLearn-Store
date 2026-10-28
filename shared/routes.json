@@ -1,0 +1,5 @@
+{
+    "locales": ["en", "zh-CN", "ja"],
+    "staticPages": ["", "search", "favorites", "account", "merchant", "admin", "privacy", "terms", "security", "maintenance"],
+    "workerFirst": ["/api/v1", "/api/v1/*", "/api/auth", "/api/auth/*", "/en/products/*", "/zh-CN/products/*", "/ja/products/*", "/en/shops/*", "/zh-CN/shops/*", "/ja/shops/*", "/sitemap.xml", "/sitemaps/*"]
+}

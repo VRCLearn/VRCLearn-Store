@@ -309,14 +309,16 @@ describe("real SQLite publication and authorization integration", () => {
         await visible(product.id, "JP", content.title);
         expect(fixture.database.prepare("SELECT region, status, reason FROM publication_requests WHERE revision_id = ? ORDER BY region").all(product.revisionId)).toEqual(approved);
     });
-    it("enforces ownership and blocks non-administrators, restricted and unverified accounts while keeping enrollment open", async () => {
+    it("enforces ownership, roles and bans while keeping enrollment open without email verification", async () => {
         await enroll();
         const created = (await api("merchant/products", "POST", content)).data as { id: string };
         expect((await api(`merchant/products/${created.id}`, "PUT", content, "outsider")).status).toBe(409);
-        for (const user of [{ ...admin, role: "user" }, { ...admin, banned: true }, { ...admin, emailVerified: false }]) {
+        for (const user of [{ ...admin, role: "user" }, { ...admin, banned: true }]) {
             fixture.env.AUTH = Object.assign({} as Fetcher, { fetch: async () => Response.json(user) });
-            expect((await api("admin/queue", "GET", undefined, "admin")).status).toBe(user.emailVerified ? 403 : 401);
+            expect((await api("admin/queue", "GET", undefined, "admin")).status).toBe(403);
         }
+        fixture.env.AUTH = Object.assign({} as Fetcher, { fetch: async () => Response.json(null) });
+        expect((await api("admin/queue", "GET", undefined, "admin")).status).toBe(401);
         fixture.env.AUTH = Object.assign({} as Fetcher, { fetch: async () => Response.json(admin) });
         expect((await api("admin/queue", "GET", undefined, "admin")).status).toBe(200);
     });

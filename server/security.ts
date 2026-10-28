@@ -1,7 +1,6 @@
 import { z } from "zod";
 import type { Region, SessionUser } from "../shared/contracts";
 import type { AppEnv } from "./env";
-import { serviceEnabled } from "../edge/budget";
 import { validQuotaResponse } from "../worker/quota-core";
 
 export class HttpError extends Error {
@@ -82,7 +81,7 @@ export async function session(request: Request, env: AppEnv, admin = false): Pro
     if (!response.ok) throw new HttpError(503, "AUTH_UNAVAILABLE", "Authentication is temporarily unavailable.");
     const payload = await response.json() as SessionUser | { user: SessionUser | null } | null;
     const user = payload && "user" in payload ? payload.user : payload;
-    if (!user || !user.emailVerified) throw new HttpError(401, "SIGN_IN_REQUIRED", "Sign in with a verified email address.");
+    if (!user) throw new HttpError(401, "SIGN_IN_REQUIRED", "Sign in to use this feature.");
     if (user.banned) throw new HttpError(403, "ACCOUNT_RESTRICTED", "This account is restricted.");
     if (admin && user.role !== "admin") {
         throw new HttpError(403, "ADMIN_REQUIRED", "An administrator account is required.");
@@ -141,12 +140,6 @@ export async function turnstile(request: Request, env: AppEnv, token: string, ex
     } catch (error) {
         if (error instanceof HttpError) throw error;
         throw new HttpError(503, "VERIFICATION_UNAVAILABLE", "Human verification is temporarily unavailable.");
-    }
-}
-
-export async function mode(env: AppEnv, highCost = false): Promise<void> {
-    if (!await serviceEnabled(env, highCost)) {
-        throw new HttpError(503, "SERVICE_PAUSED", "This operation is temporarily paused to protect service capacity.");
     }
 }
 

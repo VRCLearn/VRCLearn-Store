@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { secureOrigin } from "../server/security";
 import { allowedHost } from "../edge/respond";
@@ -11,10 +10,6 @@ const origins = { production: "https://store.vrclearn.com", test: "https://test-
 
 function fixture(environment: "production" | "test") {
     const value = testEnvironment();
-    value.database.exec(readFileSync("migrations/0002_auth.sql", "utf8"));
-    value.database.exec(readFileSync("migrations/0004_remove_mfa.sql", "utf8"));
-    value.state.set("budget:state", JSON.stringify({ mode: "normal", updatedAt: new Date().toISOString() }));
-    const messages: { text?: string }[] = [];
     const env: SupportEnv = {
         ...value.env,
         QUOTA: Object.assign({} as SupportEnv["QUOTA"], value.env.QUOTA),
@@ -22,8 +17,6 @@ function fixture(environment: "production" | "test") {
         MEDIA_ORIGIN: environment === "test" ? "https://test-store-media.vrclearn.com" : "https://store-media.vrclearn.com",
         BETTER_AUTH_SECRET: `only-for-tests-${environment}-${"x".repeat(32)}`,
         AUTH_RATE_LIMIT: Object.assign({} as RateLimit, { limit: async () => ({ success: true }) }),
-        EMAIL: Object.assign({} as SendEmail, { send: async (message: { text?: string }) => { messages.push(message); return { messageId: "test" }; } }),
-        EMAIL_FROM: environment === "test" ? "test-noreply@vrclearn.com" : "noreply@vrclearn.com",
     };
     vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request) => {
         if (String(input) !== "https://challenges.cloudflare.com/turnstile/v0/siteverify") throw new Error("Unexpected external request");
@@ -38,9 +31,6 @@ function fixture(environment: "production" | "test") {
         const credentials = { name: "Fixture", email: "isolation@example.com", password };
         const signUp = await handleAuth(request("/sign-up/email", credentials), env);
         expect(signUp.status, await signUp.clone().text()).toBe(200);
-        const verification = /https:\/\/[^\s]+/.exec(messages[0]?.text ?? "")?.[0];
-        expect(verification).toBeTruthy();
-        expect((await handleAuth(new Request(verification!, { headers: { "cf-connecting-ip": "203.0.113.5" } }), env)).status).toBeLessThan(400);
         return handleAuth(request("/sign-in/email", credentials), env);
     }
     return { ...value, env, appEnv: { ...value.env, ORIGIN: env.ORIGIN, MEDIA_ORIGIN: env.MEDIA_ORIGIN }, request, signIn };
@@ -87,7 +77,7 @@ describe("deployed authentication environment boundaries", () => {
             expect(f.queries).toHaveLength(before);
             expect(() => secureOrigin(request, f.appEnv)).toThrow("request origin");
             expect(allowedHost(new Request(`${origins[environment]}/api/auth/get-session`), f.appEnv)).toBe(true);
-            for (const origin of [origins[otherEnvironment], origins[environment].replace("https:", "http:"), "https://test-vrclearn-store.pages.dev", "https://vrclearn-store.pages.dev"]) {
+            for (const origin of [origins[otherEnvironment], origins[environment].replace("https:", "http:"), "https://test-vrclearn-store.example.workers.dev", "https://vrclearn-store.example.workers.dev"]) {
                 const wrongHost = new Request(`${origin}/api/auth/get-session`, { headers: { origin: origins[environment] } });
                 expect(allowedHost(wrongHost, f.appEnv), origin).toBe(false);
             }

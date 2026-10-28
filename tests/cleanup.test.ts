@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { cleanupStaleMedia } from "../edge/cleanup";
 import { testEnvironment } from "./helpers";
@@ -8,7 +7,6 @@ describe("bounded object cleanup", () => {
         const fixture = testEnvironment();
         const db = fixture.database;
         try {
-            db.exec(readFileSync("migrations/0002_auth.sql", "utf8"));
             const old = "2026-08-01T00:00:00.000Z";
             const shop = crypto.randomUUID();
             const product = crypto.randomUUID();
@@ -34,7 +32,6 @@ describe("bounded object cleanup", () => {
         const fixture = testEnvironment();
         const db = fixture.database;
         try {
-            db.exec(readFileSync("migrations/0002_auth.sql", "utf8"));
             const old = "2026-08-01T00:00:00.000Z";
             const shop = crypto.randomUUID();
             const product = crypto.randomUUID();

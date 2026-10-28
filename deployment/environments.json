@@ -1,94 +1,95 @@
 {
-    "version": 1,
+    "version": 2,
     "accountId": "ed7beef1c506866d938a47bc0e96047b",
     "zoneId": "967eddcad533af8ad00b65c307f734af",
     "production": {
+        "enabled": false,
+        "provisioned": false,
         "branch": "main",
         "origin": "https://store.vrclearn.com",
         "mediaOrigin": "https://store-media.vrclearn.com",
-        "pages": {
+        "app": {
             "name": "vrclearn-store",
-            "id": "49f24811-18b6-4778-a6c3-bb73278bb7da"
+            "id": null
         },
         "support": {
             "name": "vrclearn-store-support",
-            "doNamespaceId": "5eb0c01b75304890afc2a33737a4f82b",
-            "rateLimitNamespaceId": "2026102801"
+            "id": null,
+            "doNamespaceId": null,
+            "rateLimitNamespaceId": null
         },
         "database": {
             "name": "vrclearn-store",
-            "id": "61bf6c3f-1e6a-4fca-9a43-6b3552167642"
+            "id": null
         },
         "state": {
-            "name": "VRCLearn Store State",
-            "id": "c0681109ffa94b7b9de3d57cefbc1d32"
+            "name": "vrclearn-store-state",
+            "id": null
+        },
+        "releaseDatabase": {
+            "name": "vrclearn-store-release-control",
+            "id": null
         },
         "privateBucket": "vrclearn-store-private",
         "publicBucket": "vrclearn-store-public",
         "turnstile": {
             "name": "VRCLearn Store",
-            "siteKey": "0x4AAAAAAFn3jz6ZpGGLB0p4"
+            "siteKey": null
         },
         "access": {
-            "applicationId": "5b8b53d3-f462-49df-90b8-804672884cdc",
-            "policyId": "26342555-ae8e-4110-84a0-e6372a589edb"
+            "applicationId": null,
+            "policyId": null
         },
         "edge": {
-            "rulesetId": "22d16a870c2e4e66adf87c345aa1b38a",
-            "dynamicRuleId": "3ad3c0bd3e00476fb7e2c84b50bb4378",
-            "mediaRuleId": "ff04b3a222494e3980beb7cd26ebb401"
-        },
-        "emailFrom": "noreply@vrclearn.com"
+            "rulesetId": null,
+            "mediaRuleId": null,
+            "cacheRulesetId": null,
+            "cacheRuleId": null
+        }
     },
     "test": {
+        "enabled": true,
+        "provisioned": true,
         "branch": "test",
         "origin": "https://test-store.vrclearn.com",
         "mediaOrigin": "https://test-store-media.vrclearn.com",
-        "pages": {
+        "app": {
             "name": "test-vrclearn-store",
-            "id": "2be2b4ac-536f-408f-9511-e85c9c232a2d"
+            "id": "fbfd79ae81a040ae8bbde70a3f8cb738"
         },
         "support": {
             "name": "test-vrclearn-store-support",
-            "doNamespaceId": "8f3bd0c991994f8ba5c3a8c14746c285",
-            "rateLimitNamespaceId": "2026102802"
+            "id": "344028a613434f928613e776c204152b",
+            "doNamespaceId": "b0f25f345e624919a7090da52a21e0ed",
+            "rateLimitNamespaceId": "2026102901"
         },
         "database": {
             "name": "test-vrclearn-store",
-            "id": "7bb66e28-d981-4db2-8963-4e6820ba7a14"
+            "id": "e69bb338-b545-4767-893a-b49360bfb7dd"
         },
         "state": {
             "name": "test-vrclearn-store-state",
-            "id": "8a470d7695df437eaa3dde8f0d2b04b9"
+            "id": "7cb8a1e32fee4d3f86e190bc131edb18"
+        },
+        "releaseDatabase": {
+            "name": "test-vrclearn-store-release-control",
+            "id": "e6e3ad30-3f6c-4238-8aa6-ad1fe50a620f"
         },
         "privateBucket": "test-vrclearn-store-private",
         "publicBucket": "test-vrclearn-store-public",
         "turnstile": {
             "name": "test-VRCLearn Store",
-            "siteKey": "0x4AAAAAAFphodTLZhlPCTDV"
+            "siteKey": "0x4AAAAAAFp-035bylFCo1Qt"
         },
         "access": {
-            "applicationId": "88dad560-53c2-497c-8fb3-3c33c8dcff8a",
-            "policyId": "fc02a1a3-1fb5-4371-ad5d-d473f4657a44"
+            "applicationId": "9c5670b4-9eb7-4c86-99c4-7e1a61b4b0d9",
+            "policyId": "dd83b676-2da9-4e3b-8cdc-794e6fe502df"
         },
         "edge": {
             "rulesetId": "22d16a870c2e4e66adf87c345aa1b38a",
-            "dynamicRuleId": "3ad3c0bd3e00476fb7e2c84b50bb4378",
-            "mediaRuleId": "ff04b3a222494e3980beb7cd26ebb401"
-        },
-        "emailFrom": "test-noreply@vrclearn.com"
-    },
-    "control": {
-        "name": "vrclearn-store-account-monitor",
-        "state": {
-            "name": "vrclearn-store-account-state",
-            "id": "f1dd57822dd5443e8a30d7c0f5b3c6eb"
-        },
-        "doNamespaceId": "740f1aac0b134fe1a0e4090983fad2b9",
-        "emailFrom": "noreply@vrclearn.com",
-        "releaseDatabase": {
-            "name": "vrclearn-store-release-control",
-            "id": "a051be13-2d43-49e6-8ad7-4c940366a3ea"
+            "mediaRuleId": "8d6f97b857374f9dabcc611a829f04b5",
+            "cacheRulesetId": "d33afea19b3d495485836d516a6f41b0",
+            "cacheRuleId": "c659263e5f2c421387788170e89e576f"
         }
     }
 }

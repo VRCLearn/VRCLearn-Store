@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAuthClient } from "better-auth/client";
-import { onRequest } from "../../functions/api/auth/[[path]]";
+import app from "../../app/index";
 import { handleAuth } from "../../worker/auth";
 import type { SupportEnv } from "../../worker/env";
 import type { AppEnv } from "../../server/env";
@@ -20,7 +20,10 @@ afterEach(() => vi.unstubAllGlobals());
 function fixture() {
     const f = testEnvironment();
     const rateLimit = vi.fn(async () => ({ success: true }));
-    const support = Object.assign({} as SupportEnv, { ...f.env, AUTH_RATE_LIMIT: { limit: rateLimit } });
+    const support = Object.assign({} as SupportEnv, {
+        ...f.env, AUTH_RATE_LIMIT: { limit: rateLimit },
+        BETTER_AUTH_SECRET: "client-test-auth-secret-7f005c7a-136f-461a-a631-599fbe8fbd41",
+    });
     f.env.AUTH = Object.assign({} as Fetcher, { fetch: (request: Request) => handleAuth(request, support) });
     let response: Response | undefined;
     const transport = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -30,8 +33,8 @@ function fixture() {
         headers.set("CF-Connecting-IP", "203.0.113.5");
         headers.set("x-turnstile-token", "test-token");
         const request = new Request(incoming, { headers });
-        const context = Object.assign({} as EventContext<AppEnv, string, Record<string, unknown>>, { request, env: f.env });
-        const result = await onRequest(context);
+        const context = Object.assign({} as ExecutionContext, { waitUntil: vi.fn(), passThroughOnException: vi.fn() });
+        const result = await app.fetch(request, f.env as AppEnv, context);
         response = result.clone();
         return result;
     });
@@ -41,13 +44,11 @@ function fixture() {
 
 describe("auth errors through the real Better Auth client", () => {
     it.each([
-        { guard: "budget", status: 503, code: "FEATURE_PAUSED", message: "actionUnavailable" },
         { guard: "rate", status: 429, code: "RATE_LIMITED", message: "tooManyRequests" },
         { guard: "challenge", status: 403, code: "CHALLENGE_FAILED", message: "verificationExpired" },
     ] as const)("preserves $code, status $status and the request reference for localized UI errors", async ({ guard, status, code, message }) => {
         const f = fixture();
         try {
-            if (guard === "budget") f.state.set("budget:state", JSON.stringify({ mode: "restricted", updatedAt: new Date().toISOString() }));
             if (guard === "rate") f.rateLimit.mockResolvedValue({ success: false });
             vi.stubGlobal("fetch", vi.fn(async () => Response.json({ success: false })));
             const before = f.queries.length;
@@ -69,6 +70,20 @@ describe("auth errors through the real Better Auth client", () => {
             }
             expect(f.transport).toHaveBeenCalledTimes(1);
             expect(f.queries).toHaveLength(before);
+        } finally { f.database.close(); }
+    });
+
+    it("registers through the real client and Worker entrypoint without an email round trip", async () => {
+        const f = fixture();
+        try {
+            vi.stubGlobal("fetch", vi.fn(async () => Response.json({ success: true, hostname: "store.vrclearn.com", action: "auth" })));
+            const result = await f.client.signUp.email({ name: "Display nickname", email: "test@example.com", password: "a-strong-test-password" });
+            expect(checked(result)).toMatchObject({ user: { name: "Display nickname", email: "test@example.com", emailVerified: false } });
+            expect(f.response().headers.get("Set-Cookie")).toContain("session_token");
+            expect(f.response().headers.get("Cache-Control")).toBe("no-store");
+            expect(f.database.prepare("SELECT COUNT(*) AS n FROM auth_session").get()?.n).toBe(1);
+            expect(f.database.prepare("SELECT COUNT(*) AS n FROM auth_verification").get()?.n).toBe(0);
+            expect(globalThis.fetch).toHaveBeenCalledTimes(1);
         } finally { f.database.close(); }
     });
 });

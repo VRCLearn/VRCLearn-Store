@@ -7,40 +7,74 @@ import { describe, expect, it } from "vitest";
 import { buildStaticHeaders, staticBuildContext, validateStaticHeaders } from "../scripts/static-headers.mjs";
 // @ts-expect-error deployment tooling uses native JavaScript modules
 import { defaultConfigurationFiles } from "../scripts/preflight.mjs";
+// @ts-expect-error deployment tooling uses native JavaScript modules
+import { buildEnvironmentConfigs } from "../scripts/environment.mjs";
 
 const template = readFileSync("public/_headers", "utf8");
 const manifest = JSON.parse(readFileSync("deployment/environments.json", "utf8"));
 function imageSources(headers: string) {
     return /\bimg-src\s+([^;]+)/.exec(headers)?.[1].trim().split(/\s+/);
 }
+async function cloudFixture() {
+    const directory = await mkdtemp(join(tmpdir(), "vrclearn-static-cloud-"));
+    const configured = structuredClone(manifest);
+    let sequence = 200;
+    const id = () => (++sequence).toString(16).padStart(32, "a");
+    const profile = configured.test;
+    profile.provisioned = true;
+    for (const target of [profile.app, profile.support, profile.database, profile.state, profile.releaseDatabase]) target.id = id();
+    profile.support.doNamespaceId = id();
+    profile.support.rateLimitNamespaceId = "2026102902";
+    profile.turnstile.siteKey = "0x-test-static-policy";
+    profile.access.applicationId = id();
+    profile.access.policyId = id();
+    for (const key of Object.keys(profile.edge)) profile.edge[key] = id();
+    const sha = "a".repeat(40);
+    const manifestPath = join(directory, "environments.json");
+    const appConfigPath = join(directory, "app.jsonc");
+    await writeFile(manifestPath, JSON.stringify(configured));
+    const config = buildEnvironmentConfigs(configured, "test", { releaseSha: sha }).app;
+    await writeFile(appConfigPath, JSON.stringify(config));
+    return { directory, config, manifestPath, appConfigPath, variables: { DEPLOYMENT_ENV: "test", WORKERS_CI_BRANCH: "test", WORKERS_CI_COMMIT_SHA: sha, WORKER_NAME: "test-vrclearn-store", RELEASE_SHA: sha, VRCLEARN_APP_CONFIG: appConfigPath } };
+}
 
 describe("static media content policy isolation", () => {
-    it.each(["production", "test"])("allows only %s media from its environment manifest", async (environment) => {
-        const context = await staticBuildContext({ DEPLOYMENT_ENV: environment });
-        const headers = buildStaticHeaders(template, context.mediaOrigin);
-        expect(imageSources(headers)).toEqual(["'self'", "data:", manifest[environment].mediaOrigin]);
-        expect(headers).not.toContain(manifest[environment === "test" ? "production" : "test"].mediaOrigin);
-        expect(headers).not.toContain("__STORE_MEDIA_ORIGIN__");
-        expect(validateStaticHeaders(template, headers, context.mediaOrigin)).toEqual([]);
-        const broadened = headers.replace(`data: ${context.mediaOrigin}`, `data: ${manifest.production.mediaOrigin} ${manifest.test.mediaOrigin}`);
-        expect(validateStaticHeaders(template, broadened, context.mediaOrigin)).not.toEqual([]);
+    it("allows only the enabled test environment's media origin", async () => {
+        const fixture = await cloudFixture();
+        try {
+            const context = await staticBuildContext(fixture.variables, { manifestPath: fixture.manifestPath });
+            const headers = buildStaticHeaders(template, context.mediaOrigin);
+            expect(imageSources(headers)).toEqual(["'self'", "data:", manifest.test.mediaOrigin]);
+            expect(headers).not.toContain(manifest.production.mediaOrigin);
+            expect(headers).not.toContain("__STORE_MEDIA_ORIGIN__");
+            expect(validateStaticHeaders(template, headers, context.mediaOrigin)).toEqual([]);
+            const broadened = headers.replace(`data: ${context.mediaOrigin}`, `data: ${manifest.production.mediaOrigin} ${manifest.test.mediaOrigin}`);
+            expect(validateStaticHeaders(template, broadened, context.mediaOrigin)).not.toEqual([]);
+            await expect(staticBuildContext({ ...fixture.variables, DEPLOYMENT_ENV: "production" }, { manifestPath: fixture.manifestPath })).rejects.toThrow("DEPLOYMENT_DISABLED");
+        } finally { await rm(fixture.directory, { recursive: true, force: true }); }
     });
 
     it("uses only same-origin and the configured loopback media address for local builds", async () => {
         const context = await staticBuildContext({});
-        const local = JSON.parse(readFileSync("deployment/local-pages.jsonc", "utf8"));
+        const local = JSON.parse(readFileSync("deployment/local-app.jsonc", "utf8"));
         expect(context.environment).toBe("local");
         expect(imageSources(buildStaticHeaders(template, context.mediaOrigin))).toEqual(["'self'", "data:", local.vars.MEDIA_ORIGIN]);
         for (const name of ["production", "test"]) expect(buildStaticHeaders(template, context.mediaOrigin)).not.toContain(manifest[name].mediaOrigin);
     });
 
     it("rejects absent cloud identities, mismatched projects and unknown environments", async () => {
-        await expect(staticBuildContext({ CF_PAGES: "1" })).rejects.toThrow("explicit");
         await expect(staticBuildContext({ WORKERS_CI_BRANCH: "test" })).rejects.toThrow("explicit");
+        await expect(staticBuildContext({ WORKER_NAME: "test-vrclearn-store" })).rejects.toThrow("explicit");
         await expect(staticBuildContext({ DEPLOYMENT_ENV: "preview" })).rejects.toThrow("explicit");
-        await expect(staticBuildContext({ DEPLOYMENT_ENV: "test", CF_PAGES: "1", CF_PAGES_BRANCH: "main", PAGES_PROJECT_NAME: "vrclearn-store" })).rejects.toThrow("project and branch");
-        await expect(staticBuildContext({ DEPLOYMENT_ENV: "test", WORKERS_CI_BRANCH: "main", PAGES_PROJECT_NAME: "test-vrclearn-store" })).rejects.toThrow("project and branch");
-        expect(await staticBuildContext({ DEPLOYMENT_ENV: "test", CF_PAGES: "1", CF_PAGES_BRANCH: "test", PAGES_PROJECT_NAME: "test-vrclearn-store" })).toEqual({ environment: "test", mediaOrigin: manifest.test.mediaOrigin });
+        const fixture = await cloudFixture();
+        try {
+            await expect(staticBuildContext({ ...fixture.variables, WORKERS_CI_BRANCH: "main" }, { manifestPath: fixture.manifestPath })).rejects.toThrow("Worker and branch");
+            await expect(staticBuildContext({ ...fixture.variables, WORKER_NAME: "vrclearn-store" }, { manifestPath: fixture.manifestPath })).rejects.toThrow("Worker and branch");
+            await expect(staticBuildContext({ ...fixture.variables, WORKERS_CI_COMMIT_SHA: "b".repeat(40) }, { manifestPath: fixture.manifestPath })).rejects.toThrow("immutable release SHA");
+            fixture.config.vars.MEDIA_ORIGIN = manifest.production.mediaOrigin;
+            await writeFile(fixture.appConfigPath, JSON.stringify(fixture.config));
+            await expect(staticBuildContext(fixture.variables, { manifestPath: fixture.manifestPath })).rejects.toThrow("generated Worker configuration");
+        } finally { await rm(fixture.directory, { recursive: true, force: true }); }
     });
 
     it("rejects cloud origins hidden in a local configuration and malformed templates", async () => {

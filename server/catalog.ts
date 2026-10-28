@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { Locale, PageResult, Product, ProductInput, Region, Shop, ShopInput } from "../shared/contracts";
 import type { AppEnv } from "./env";
-import { HttpError, mode, publicRate, regionOf } from "./security";
+import { HttpError, publicRate, regionOf } from "./security";
 import { ftsQuery } from "./validation";
 
 interface PublicRow {
@@ -29,7 +29,6 @@ const publicWhere = `p.region = ? AND p.active = 1 AND COALESCE(owner.banned, 0)
     AND (p.region != 'cn' OR COALESCE(json_extract(r.content_json, '$.r18'), 0) = 0)`;
 
 export async function listRecommendations(request: Request, env: AppEnv): Promise<{ items: Product[] }> {
-    await mode(env);
     const region = regionOf(request);
     await publicRate(request, env);
     if ([...new URL(request.url).searchParams].length) throw new HttpError(400, "INVALID_FILTER", "Recommendations do not accept query parameters.");
@@ -58,7 +57,6 @@ export function toProduct(row: PublicRow, region: Region, env: AppEnv): Product 
 const cursorSchema = z.object({ id: z.string().uuid(), time: z.string().datetime(), value: z.number().finite().optional() }).strict();
 
 export async function listProducts(request: Request, env: AppEnv, shopId?: string): Promise<PageResult<Product>> {
-    await mode(env);
     const region = regionOf(request);
     await publicRate(request, env);
     const url = new URL(request.url);
@@ -144,7 +142,6 @@ export async function listProducts(request: Request, env: AppEnv, shopId?: strin
 }
 
 export async function getProduct(request: Request, env: AppEnv, id: string): Promise<Product> {
-    await mode(env);
     const region = regionOf(request);
     await publicRate(request, env);
     const row = await env.DB.prepare(`SELECT ${publicColumns} ${publicFrom} WHERE ${publicWhere} AND g.id = ? LIMIT 1`).bind(region, id).first<PublicRow>();
@@ -153,7 +150,6 @@ export async function getProduct(request: Request, env: AppEnv, id: string): Pro
 }
 
 export async function getShop(request: Request, env: AppEnv, id: string): Promise<Shop> {
-    await mode(env);
     const region = regionOf(request);
     await publicRate(request, env);
     const row = await env.DB.prepare(`SELECT s.id, sr.content_json FROM shops s
@@ -166,7 +162,6 @@ export async function getShop(request: Request, env: AppEnv, id: string): Promis
 }
 
 export async function sitemap(request: Request, env: AppEnv, locale: Locale = "en"): Promise<string[]> {
-    await mode(env);
     const region = regionOf(request);
     await publicRate(request, env);
     const rows = await env.DB.prepare(`SELECT g.id, g.shop_id ${publicFrom} WHERE ${publicWhere} ORDER BY g.id LIMIT 10001`).bind(region).all<{ id: string; shop_id: string }>();

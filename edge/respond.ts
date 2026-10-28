@@ -6,6 +6,7 @@ export function secureResponse(response: Response, requestId = crypto.randomUUID
     secured.headers.set("X-Frame-Options", "DENY");
     secured.headers.set("Referrer-Policy", "no-referrer");
     secured.headers.set("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+    if (!secured.headers.has("Content-Security-Policy")) secured.headers.set("Content-Security-Policy", "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
     secured.headers.set("X-Request-ID", requestId);
     return secured;
 }

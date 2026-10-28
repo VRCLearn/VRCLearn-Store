@@ -1,10 +1,7 @@
 import { createHash } from "node:crypto";
 
 export const baselineMigrations = Object.freeze({
-    "0001_business.sql": "b60fd4f5fd3148f6912c9fc68a23cf05f949e2269c25aa653d6e0da9463f712f",
-    "0002_auth.sql": "8dbc260438767ef507b159befc13b386f00c854e4f2043d67c6e1ea58e726508",
-    "0003_revision_storage.sql": "007f158de59ada62c5afde3807045150aa612e690d761c2ff12981bb59d271dd",
-    "0004_remove_mfa.sql": "328214f286a00f88015095079162101bbbf6603dcfe9199efd2a004b3ac1e154",
+    "0001_initial.sql": "577723ee1d4e2095ef5c8820c0f97ca5020cc7c872b91979b07cc66633117f49",
 });
 
 export function migrationDigest(sql) {
@@ -17,14 +14,14 @@ export function migrationDigest(sql) {
 export function migrationStatements(sql) {
     if (typeof sql !== "string" || Buffer.byteLength(sql) > 262144 || sql.includes("\0")) throw new Error("MIGRATION_INPUT_REJECTED");
     const statements = [];
-    let tokens = [], start = 0, index = 0;
-    const flush = (end) => { if (tokens.length) statements.push({ sql: sql.slice(start, end).trim(), tokens }); tokens = []; start = end; };
+    let tokens = [], start = 0, index = 0, triggerDepth = 0;
+    const flush = (end) => { if (tokens.length) statements.push({ sql: sql.slice(start, end).trim(), tokens }); tokens = []; triggerDepth = 0; start = end; };
     while (index < sql.length) {
         const char = sql[index];
         if (/\s/.test(char)) { index++; continue; }
         if (sql.startsWith("--", index)) { index = sql.indexOf("\n", index + 2); if (index < 0) index = sql.length; continue; }
         if (sql.startsWith("/*", index)) { const end = sql.indexOf("*/", index + 2); if (end < 0) throw new Error("MIGRATION_UNCLOSED_COMMENT"); index = end + 2; continue; }
-        if (char === ";") { index++; flush(index); continue; }
+        if (char === ";") { index++; if (!triggerDepth) flush(index); continue; }
         if (["'", '"', "`", "["].includes(char)) {
             const close = char === "[" ? "]" : char;
             const begin = index++;
@@ -39,11 +36,20 @@ export function migrationStatements(sql) {
             continue;
         }
         const word = /^[A-Za-z_][A-Za-z_0-9]*/.exec(sql.slice(index));
-        if (word) { tokens.push({ value: word[0].toUpperCase(), kind: "word" }); index += word[0].length; continue; }
+        if (word) {
+            const value = word[0].toUpperCase();
+            if (tokens[0]?.value === "CREATE" && tokens.some((token) => token.value === "TRIGGER" && token.kind === "word")) {
+                if (["BEGIN", "CASE"].includes(value)) triggerDepth++;
+                if (value === "END") triggerDepth--;
+                if (triggerDepth < 0) throw new Error("MIGRATION_TRIGGER_INVALID");
+            }
+            tokens.push({ value, kind: "word" }); index += word[0].length; continue;
+        }
         const number = /^(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/.exec(sql.slice(index));
         if (number) { tokens.push({ value: number[0], kind: "number" }); index += number[0].length; continue; }
         tokens.push({ value: char, kind: "symbol" }); index++;
     }
+    if (triggerDepth) throw new Error("MIGRATION_TRIGGER_UNCLOSED");
     flush(index);
     if (!statements.length) throw new Error("MIGRATION_EMPTY");
     return statements;
@@ -97,6 +103,7 @@ function classify({ tokens }) {
 export function validateAutomaticMigration(name, sql) {
     if (!/^\d{4,}_[a-z0-9_]+\.sql$/.test(name)) throw new Error("MIGRATION_NAME_REJECTED");
     if (Object.hasOwn(baselineMigrations, name)) throw new Error(`MIGRATION_REQUIRES_BOOTSTRAP:${name}`);
+    if (Number(name.split("_", 1)[0]) < 2) throw new Error("MIGRATION_NAME_REJECTED");
     const statements = migrationStatements(sql);
     if (!statements.every(classify)) throw new Error(`MIGRATION_REQUIRES_REVIEW:${name}`);
     return { name, digest: migrationDigest(sql), statements: statements.map((statement) => statement.sql) };
@@ -106,13 +113,15 @@ export function migrationPlan(files, appliedNames, recordedChecksums = {}) {
     const names = new Set(appliedNames);
     const local = new Map(files.map((file) => [file.name, file]));
     for (const [name, digest] of Object.entries(baselineMigrations)) {
-        if (!names.has(name)) throw new Error(`MIGRATION_REQUIRES_BOOTSTRAP:${name}`);
         if (!local.has(name) || migrationDigest(local.get(name).sql) !== digest) throw new Error(`MIGRATION_BASELINE_CHANGED:${name}`);
+        if (names.size && !names.has(name)) throw new Error(`MIGRATION_HISTORY_MISSING:${name}`);
     }
     for (const name of names) {
         if (!local.has(name)) throw new Error(`MIGRATION_HISTORY_MISSING:${name}`);
         const expected = baselineMigrations[name] ?? recordedChecksums[name];
         if (!expected || migrationDigest(local.get(name).sql) !== expected) throw new Error(`MIGRATION_HISTORY_CHANGED:${name}`);
     }
-    return [...files].sort((a, b) => a.name.localeCompare(b.name)).filter((file) => !names.has(file.name)).map((file) => validateAutomaticMigration(file.name, file.sql));
+    return [...files].sort((a, b) => a.name.localeCompare(b.name)).filter((file) => !names.has(file.name)).map((file) => Object.hasOwn(baselineMigrations, file.name)
+        ? { name: file.name, digest: baselineMigrations[file.name], initial: true, statements: migrationStatements(file.sql).map((statement) => statement.sql) }
+        : validateAutomaticMigration(file.name, file.sql));
 }

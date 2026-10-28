@@ -11,10 +11,10 @@ export function localizedError(error: unknown, t: Record<MessageKey, string>): s
     if (!(error instanceof ApiError)) return error instanceof Error ? error.message : t.error;
     const keys: Record<string, MessageKey> = {
         SIGN_IN_REQUIRED: "signInRequired", UNAUTHORIZED: "signInRequired", SESSION_EXPIRED: "sessionExpired",
-        EMAIL_NOT_VERIFIED: "emailVerificationRequired", INVALID_EMAIL_OR_PASSWORD: "invalidCredentials",
+        INVALID_EMAIL_OR_PASSWORD: "invalidCredentials",
         INVALID_PASSWORD: "invalidCredentials", USER_ALREADY_EXISTS: "emailAlreadyUsed",
-        USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "emailAlreadyUsed", INVALID_TOKEN: "expiredLink",
-        TOKEN_EXPIRED: "expiredLink", ADMIN_REQUIRED: "adminRequired", ACCOUNT_RESTRICTED: "accountRestricted",
+        USER_ALREADY_EXISTS_USE_ANOTHER_EMAIL: "emailAlreadyUsed",
+        ADMIN_REQUIRED: "adminRequired", ACCOUNT_RESTRICTED: "accountRestricted",
         REGION_UNKNOWN: "regionUnavailable", CLIENT_UNVERIFIED: "regionUnavailable",
         PRODUCT_NOT_FOUND: "unavailable", SHOP_NOT_FOUND: "shopUnavailable",
         INVALID_QUERY: "searchHint", CURRENCY_REQUIRED: "priceHint", INVALID_FILTER: "invalidFilters",
@@ -27,7 +27,6 @@ export function localizedError(error: unknown, t: Record<MessageKey, string>): s
         ALL_REGIONS_REQUIRED: "allRegionsRequired", WITHDRAW_REQUIRED: "pendingImmutable", REVISION_REQUIRED: "saveBeforeSubmit",
         ADULT_CN_FORBIDDEN: "adultRegionHint",
         VERIFICATION_REQUIRED: "turnstileWait", VERIFICATION_FAILED: "verificationExpired", CHALLENGE_FAILED: "verificationExpired",
-        SERVICE_PAUSED: "actionUnavailable", FEATURE_PAUSED: "actionUnavailable",
         AUTH_UNAVAILABLE: "noApi", SERVICE_UNAVAILABLE: "noApi", NETWORK_UNAVAILABLE: "networkUnavailable",
     };
     const key = keys[error.code];

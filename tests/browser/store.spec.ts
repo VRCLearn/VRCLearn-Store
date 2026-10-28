@@ -448,7 +448,7 @@ for (const canRetry of [false, true]) {
         await page.route("**/api/**", (route) => {
             const request = route.request();
             const path = new URL(request.url()).pathname;
-            if (path === "/api/v1/me") return route.fulfill({ json: { user: { id: "local-reviewer", email: "reviewer@example.com", name: "Reviewer", role: "admin", emailVerified: true, banned: false } } });
+            if (path === "/api/v1/me") return route.fulfill({ json: { user: { id: "local-reviewer", email: "reviewer@example.com", name: "Reviewer", role: "admin", banned: false } } });
             if (path === "/api/v1/admin/queue") return route.fulfill({ json: { permissions: [], products: [item], shops: [], reports: [] } });
             if (path === `/api/v1/admin/revisions/${revisionId}/review` && request.method() === "POST") {
                 decisions.push(request.postDataJSON());
@@ -528,7 +528,7 @@ for (const revokeCnOnSave of [false, true]) {
     });
 }
 
-test("Chinese account verification failures remain localized", async ({ page }) => {
+test("Chinese Turnstile loading failures remain localized", async ({ page }) => {
     await page.route("**/api/**", (route) => {
         if (route.request().url().endsWith("/me")) return route.fulfill({ json: { user: null } });
         return route.fulfill({ status: 503, json: { error: { code: "SERVICE_UNAVAILABLE", message: "Service unavailable", requestId: "browser-test" } } });
@@ -551,7 +551,7 @@ test("Chinese registration submits a display nickname and shows an auth guard fa
         if (path === "/api/v1/config") return route.fulfill({ json: { turnstileSiteKey: "local-browser-site-key" } });
         if (path === "/api/auth/sign-up/email") {
             submitted = route.request().postDataJSON();
-            return route.fulfill({ status: 503, json: { code: "FEATURE_PAUSED", message: "Account email operations are temporarily paused", requestId: "auth-registration-reference" } });
+            return route.fulfill({ status: 403, json: { code: "VERIFICATION_FAILED", message: "Challenge failed", requestId: "auth-registration-reference" } });
         }
         return route.fulfill({ status: 404, json: { code: "NOT_FOUND", message: "Unexpected test request" } });
     });
@@ -563,10 +563,10 @@ test("Chinese registration submits a display nickname and shows an auth guard fa
     await page.getByRole("textbox", { name: "邮箱", exact: true }).fill("local-browser@example.com");
     await page.locator('input[type="password"]').fill("a-strong-browser-test-password");
     await page.locator("form").getByRole("button", { name: "创建账户", exact: true }).click();
-    await expect(page.getByRole("alert")).toContainText("此操作暂时不可用。");
+    await expect(page.getByRole("alert")).toContainText(messages("zh-CN").verificationExpired);
     await page.getByRole("alert").getByText("请求编号", { exact: true }).click();
     await expect(page.getByRole("alert")).toContainText("auth-registration-reference");
-    await expect(page.locator("main")).not.toContainText("Account email operations are temporarily paused");
+    await expect(page.locator("main")).not.toContainText("Challenge failed");
     expect(submitted).toMatchObject({ name: "测试昵称", email: "local-browser@example.com" });
     expect(submitted).not.toHaveProperty("username");
 });
@@ -577,7 +577,7 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
         let signedIn = false;
         let signIn: Record<string, unknown> | undefined;
         const authenticationPaths: string[] = [];
-        const user = { id: "local-reviewer", email: "reviewer@example.com", name: "Reviewer", emailVerified: true, role: "admin", banned: false };
+        const user = { id: "local-reviewer", email: "reviewer@example.com", name: "Reviewer", role: "admin", banned: false };
         await page.route("https://challenges.cloudflare.com/turnstile/**", (route) => route.fulfill({
             contentType: "application/javascript",
             body: 'window.turnstile = { render: (_element, options) => { queueMicrotask(() => options.callback("local-browser-token")); return "local-widget"; }, remove: () => {} };',
@@ -608,14 +608,14 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
     });
 }
 
-for (const restricted of ["anonymous", "member", "unverified", "banned"] as const) {
+for (const restricted of ["anonymous", "member", "banned"] as const) {
     test(`review desk blocks ${restricted} accounts before loading the queue`, async ({ page }) => {
         let queueRequests = 0;
         await page.route("**/api/**", (route) => {
             const path = new URL(route.request().url()).pathname;
             if (path === "/api/v1/me") return route.fulfill({ json: { user: restricted === "anonymous" ? null : {
                 id: "restricted-reviewer", email: "reviewer@example.com", name: "Reviewer",
-                role: restricted === "member" ? "user" : "admin", emailVerified: restricted !== "unverified", banned: restricted === "banned",
+                role: restricted === "member" ? "user" : "admin", banned: restricted === "banned",
             } } });
             if (path === "/api/v1/admin/queue") queueRequests++;
             return route.fulfill({ status: 403, json: { error: { code: "ADMIN_REQUIRED", message: "Administrator required" } } });
@@ -633,12 +633,14 @@ test("Material gallery selection remains selected when its current thumbnail is 
         platforms: ["pc"], pricing: "free", price: null, currency: null, purchaseUrl: "https://maker.example/product", mediaIds: [],
         images: ["/browser-gallery-first.png", "/browser-gallery-second.png"], r18: false, updatedAt: "2026-10-01T00:00:00Z",
     };
+    await page.route("**/api/v1/products*", (route) => route.fulfill({ json: { items: [product], nextCursor: null } }));
     await page.route("**/api/v1/products/gallery-browser", (route) => route.fulfill({ json: product }));
     await page.route("**/browser-gallery-*.png", (route) => route.fulfill({
         contentType: "image/png",
         body: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==", "base64"),
     }));
-    await page.goto("/en/products/gallery-browser");
+    await page.goto("/en/search");
+    await page.getByRole("link", { name: product.title, exact: true }).click();
     await expect(page.getByRole("heading", { name: "Gallery test product", exact: true })).toBeVisible();
     await expect(page.locator(".thumbnails md-outlined-icon-button")).toHaveCount(2);
     const first = page.getByRole("button", { name: "Images 1", exact: true });

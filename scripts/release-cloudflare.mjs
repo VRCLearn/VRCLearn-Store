@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { generateDeployment, repositoryRoot } from "./environment.mjs";
 import { releaseLimits, ReleaseFailure } from "./release-core.mjs";
 import { migrationStatements } from "./migration-policy.mjs";
+import { validateBuiltApplication, validateBuiltSupport } from "./preflight.mjs";
 
 function child(command, args, { timeout = 180000, env = process.env } = {}) {
     const result = spawnSync(command, args, { cwd: repositoryRoot, env, encoding: "utf8", timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
@@ -16,7 +17,7 @@ export function gitIdentity(variables = process.env) {
     const sha = child("git", ["rev-parse", "HEAD"], { timeout: 10000 });
     return {
         sha, branch: variables.WORKERS_CI_BRANCH, platformSha: variables.WORKERS_CI_COMMIT_SHA,
-        projectName: variables.PAGES_PROJECT_NAME,
+        workerName: variables.WORKER_NAME,
         dirty: Boolean(child("git", ["status", "--porcelain", "--untracked-files=no"], { timeout: 10000 })),
     };
 }
@@ -76,8 +77,6 @@ const smokeFailureCodes = Object.freeze({
     site: { transport: "SMOKE_SITE_TRANSPORT_FAILED", http: "SMOKE_SITE_HTTP_FAILED", access: "SMOKE_SITE_ACCESS_FAILED" },
     api: { transport: "SMOKE_API_TRANSPORT_FAILED", http: "SMOKE_API_HTTP_FAILED", access: "SMOKE_API_ACCESS_FAILED" },
     media: { transport: "SMOKE_MEDIA_TRANSPORT_FAILED", http: "SMOKE_MEDIA_HTTP_FAILED", access: "SMOKE_MEDIA_ACCESS_FAILED" },
-    default: { transport: "SMOKE_DEFAULT_TRANSPORT_FAILED", http: "SMOKE_DEFAULT_HTTP_FAILED", access: "SMOKE_DEFAULT_ACCESS_FAILED" },
-    preview: { transport: "SMOKE_PREVIEW_TRANSPORT_FAILED", http: "SMOKE_PREVIEW_HTTP_FAILED", access: "SMOKE_PREVIEW_ACCESS_FAILED" },
     config: { transport: "SMOKE_CONFIG_TRANSPORT_FAILED", http: "SMOKE_CONFIG_HTTP_FAILED", access: "SMOKE_CONFIG_ACCESS_FAILED" },
 });
 
@@ -104,63 +103,40 @@ async function smokeGet(target, url, { transport, remaining, sleep, headers }) {
     }
 }
 
-export function verifySupportBindings(profile, settings) {
+export function verifyWorkerBindings(profile, settings, kind) {
     const bindings = new Map((settings.bindings ?? []).map((binding) => [binding.name, binding]));
     const expected = {
         DB: ["d1", "id", profile.d1DatabaseId], STATE: ["kv_namespace", "namespace_id", profile.stateId],
         PRIVATE_MEDIA: ["r2_bucket", "bucket_name", profile.privateBucket], PUBLIC_MEDIA: ["r2_bucket", "bucket_name", profile.publicBucket],
-        QUOTA: ["durable_object_namespace", "namespace_id", profile.profile.support.doNamespaceId], AUTH_RATE_LIMIT: ["ratelimit", "namespace_id", profile.rateLimitNamespaceId],
+        QUOTA: ["durable_object_namespace", "namespace_id", profile.profile.support.doNamespaceId],
+        ...(kind === "support" ? { AUTH_RATE_LIMIT: ["ratelimit", "namespace_id", profile.rateLimitNamespaceId] } : { AUTH: ["service", "service", profile.supportWorker], ASSETS: ["assets"] }),
     };
     for (const [name, [type, key, value]] of Object.entries(expected)) {
         const binding = bindings.get(name);
-        if (binding?.type !== type || String(binding[key]) !== String(value)) throw new Error("SUPPORT_BINDING_MISMATCH");
+        if (binding?.type !== type || key && String(binding[key]) !== String(value)) throw new Error("WORKER_BINDING_MISMATCH");
     }
-    const allowed = new Set([...Object.keys(expected), "EMAIL", "BETTER_AUTH_SECRET", "TURNSTILE_SECRET_KEY", "ORIGIN", "MEDIA_ORIGIN", "ENVIRONMENT", "DEPLOYMENT_ENV", "RELEASE_SHA", "EMAIL_FROM"]);
-    if ([...bindings.keys()].some((name) => !allowed.has(name))) throw new Error("SUPPORT_EXTRA_BINDING_REJECTED");
-    for (const name of ["BETTER_AUTH_SECRET", "TURNSTILE_SECRET_KEY"]) if (bindings.get(name)?.type !== "secret_text") throw new Error("SUPPORT_RUNTIME_SECRET_MISSING");
-    if (bindings.get("ORIGIN")?.text !== profile.origin || bindings.get("MEDIA_ORIGIN")?.text !== profile.mediaOrigin || bindings.get("ENVIRONMENT")?.text !== "production" || bindings.get("EMAIL_FROM")?.text !== profile.profile.emailFrom) throw new Error("SUPPORT_RUNTIME_SECURITY_MISMATCH");
-    const sender = bindings.get("EMAIL");
-    if (sender?.type !== "send_email" || JSON.stringify(sender.allowed_sender_addresses) !== JSON.stringify([profile.profile.emailFrom])) throw new Error("SUPPORT_EMAIL_BINDING_MISMATCH");
-}
-
-export function verifyPagesBindings(profile, config) {
-    if (config.d1_databases?.DB?.id !== profile.d1DatabaseId || config.kv_namespaces?.STATE?.namespace_id !== profile.stateId
-        || config.r2_buckets?.PRIVATE_MEDIA?.name !== profile.privateBucket || config.r2_buckets?.PUBLIC_MEDIA?.name !== profile.publicBucket
-        || config.services?.AUTH?.service !== profile.supportWorker || config.durable_object_namespaces?.QUOTA?.namespace_id !== profile.profile.support.doNamespaceId) throw new Error("PAGES_BINDING_MISMATCH");
-    for (const [kind, names] of Object.entries({ d1_databases: ["DB"], kv_namespaces: ["STATE"], r2_buckets: ["PRIVATE_MEDIA", "PUBLIC_MEDIA"], services: ["AUTH"], durable_object_namespaces: ["QUOTA"] })) {
-        if (Object.keys(config[kind] ?? {}).some((name) => !names.includes(name))) throw new Error("PAGES_EXTRA_BINDING_REJECTED");
-    }
-    if (config.env_vars?.ENVIRONMENT?.value !== "production" || config.env_vars?.DEPLOYMENT_ENV?.value !== profile.environment
-        || config.env_vars?.ORIGIN?.value !== profile.origin || config.env_vars?.MEDIA_ORIGIN?.value !== profile.mediaOrigin
-        || config.env_vars?.TURNSTILE_SITE_KEY?.value !== profile.turnstileSiteKey || config.env_vars?.PAGES_PROJECT_NAME?.value !== profile.pagesProject) throw new Error("PAGES_RUNTIME_SECURITY_MISMATCH");
-    const allowed = new Set(["ENVIRONMENT", "DEPLOYMENT_ENV", "RELEASE_SHA", "ORIGIN", "MEDIA_ORIGIN", "PAGES_PROJECT_NAME", "SKIP_DEPENDENCY_INSTALL", "TURNSTILE_SITE_KEY", "TURNSTILE_SECRET_KEY", "CF_ZONE_ID"]);
-    if (Object.keys(config.env_vars ?? {}).some((name) => !allowed.has(name))) throw new Error("PAGES_EXTRA_VARIABLE_REJECTED");
+    const variables = ["ORIGIN", "MEDIA_ORIGIN", "ENVIRONMENT", "DEPLOYMENT_ENV", "RELEASE_SHA", ...(kind === "app" ? ["TURNSTILE_SITE_KEY"] : [])];
+    const secrets = ["TURNSTILE_SECRET_KEY", ...(kind === "support" ? ["BETTER_AUTH_SECRET"] : [])];
+    const allowed = new Set([...Object.keys(expected), ...variables, ...secrets]);
+    if ([...bindings.keys()].some((name) => !allowed.has(name)) || bindings.size !== (settings.bindings ?? []).length) throw new Error("WORKER_EXTRA_BINDING_REJECTED");
+    for (const name of secrets) if (bindings.get(name)?.type !== "secret_text") throw new Error("WORKER_RUNTIME_SECRET_MISSING");
+    for (const [name, value] of Object.entries({ ORIGIN: profile.origin, MEDIA_ORIGIN: profile.mediaOrigin, ENVIRONMENT: "production", DEPLOYMENT_ENV: profile.environment, ...(kind === "app" ? { TURNSTILE_SITE_KEY: profile.turnstileSiteKey } : {}) })) if (bindings.get(name)?.type !== "plain_text" || bindings.get(name)?.text !== value) throw new Error("WORKER_RUNTIME_SECURITY_MISMATCH");
+    if (settings.limits?.cpu_ms !== (kind === "app" ? 50 : 500)) throw new Error("WORKER_RUNTIME_SECURITY_MISMATCH");
 }
 
 export function createReleaseIO(profile, variables = process.env, overrides = {}) {
     let deadline = Date.now() + releaseLimits.overallMs;
-    const remaining = (maximum = releaseLimits.requestMs) => {
-        const time = Math.min(maximum, deadline - Date.now());
-        if (time <= 0) throw new ReleaseFailure("RELEASE_DEADLINE", "adapter", true);
-        return time;
-    };
+    const remaining = (maximum = releaseLimits.requestMs) => { const time = Math.min(maximum, deadline - Date.now()); if (time <= 0) throw new ReleaseFailure("RELEASE_DEADLINE", "adapter", true); return time; };
     const transport = overrides.fetch ?? fetch;
     const sleep = overrides.sleep ?? ((milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, remaining(milliseconds))));
     const api = overrides.api ?? createCloudflareClient(variables.CLOUDFLARE_API_TOKEN, transport, remaining, sleep);
+    const executeChild = overrides.executeChild ?? child;
+    const readConfiguration = overrides.readConfiguration ?? (async (path) => {
+        if (!existsSync(path)) throw new Error("WORKER_CONFIG_NOT_GENERATED");
+        return JSON.parse(await readFile(path, "utf8"));
+    });
     const accountBase = `/accounts/${profile.accountId}`;
-    const pagesBase = `${accountBase}/pages/projects/${profile.pagesProject}`;
-    const supportBase = `${accountBase}/workers/scripts/${profile.supportWorker}`;
-    const readSmokeDeployment = async (id) => {
-        remaining();
-        try { return await api(`${pagesBase}/deployments/${encodeURIComponent(id)}`); }
-        catch (error) {
-            if (!(error instanceof ReleaseFailure)) throw error;
-            if (error.code === "CLOUDFLARE_RESPONSE_INVALID") throw new Error("SMOKE_DEPLOYMENT_RESPONSE_INVALID");
-            if (error.code === "CLOUDFLARE_READ_FAILED") throw new Error("SMOKE_DEPLOYMENT_TRANSPORT_FAILED");
-            if (/^CLOUDFLARE_HTTP_\d{3}$/.test(error.code)) throw new Error("SMOKE_DEPLOYMENT_HTTP_FAILED");
-            throw error;
-        }
-    };
+    const workerBase = (kind) => `${accountBase}/workers/scripts/${kind === "app" ? profile.appWorker : profile.supportWorker}`;
     const d1 = async (id, queries, write = false) => {
         const result = await api(`${accountBase}/d1/database/${id}/query`, { method: "POST", body: { batch: queries }, write });
         if (!Array.isArray(result) || result.length !== queries.length || result.some((entry) => entry.success !== true)) throw new Error("RELEASE_D1_RESULT_INVALID");
@@ -169,167 +145,99 @@ export function createReleaseIO(profile, variables = process.env, overrides = {}
     const query = async (id, sql, params = [], write = false) => (await d1(id, [{ sql, params }], write))[0];
     const control = (sql, params = [], write = false) => query(profile.releaseDatabaseId, sql, params, write);
     const readLease = async () => (await control("SELECT * FROM release_leases WHERE environment = ?", [profile.environment])).results?.[0];
-    const supportState = async () => {
-        const [settings, deployment] = await Promise.all([api(`${supportBase}/settings`), api(`${supportBase}/deployments`)]);
-        const current = deployment.deployments?.[0];
-        const versions = current?.versions ?? [];
-        if (versions.length !== 1 || versions[0].percentage !== 100) throw new Error("SUPPORT_DEPLOYMENT_NOT_EXCLUSIVE");
+    const workerState = async (kind) => {
+        const [settings, deployment] = await Promise.all([api(`${workerBase(kind)}/settings`), api(`${workerBase(kind)}/deployments`)]);
+        const versions = deployment.deployments?.[0]?.versions ?? [];
+        if (versions.length !== 1 || versions[0].percentage !== 100) throw new Error("WORKER_DEPLOYMENT_NOT_EXCLUSIVE");
         const get = (name) => settings.bindings?.find((binding) => binding.name === name)?.text;
         return { versionId: versions[0].version_id, sha: get("RELEASE_SHA"), environment: get("DEPLOYMENT_ENV"), settings };
     };
+    const verifyEndpoints = async (kind) => { const state = await api(`${workerBase(kind)}/subdomain`); if (state.enabled !== false || state.previews_enabled !== false) throw new Error("WORKER_DEFAULT_ENDPOINT_ENABLED"); };
     let configurations;
+    const deploy = async (kind, sha) => {
+        const path = resolve(repositoryRoot, `dist/${kind}/wrangler.json`);
+        const config = await readConfiguration(path);
+        if ((kind === "app" ? validateBuiltApplication : validateBuiltSupport)(profile, config, path).length) throw new Error("APP_BUILD_CONFIG_INVALID");
+        executeChild(process.execPath, [resolve(repositoryRoot, "node_modules/wrangler/bin/wrangler.js"), "deploy", "--config", path, "--strict"], { timeout: remaining(120000), env: {
+            ...variables,
+            CLOUDFLARE_ACCOUNT_ID: profile.accountId, WRANGLER_SEND_METRICS: "false",
+            // A connected Build identifies its entry Worker. Keep Wrangler's
+            // checks enabled, but identify each previously verified target here.
+            WRANGLER_CI_MATCH_TAG: kind === "app" ? profile.appWorkerId : profile.supportWorkerId,
+            WRANGLER_CI_OVERRIDE_NAME: kind === "app" ? profile.appWorker : profile.supportWorker,
+        } });
+        const state = await workerState(kind);
+        verifyWorkerBindings(profile, state.settings, kind); await verifyEndpoints(kind);
+        if (state.environment !== profile.environment || state.sha !== sha) throw new Error("WORKER_RELEASE_IDENTITY_MISMATCH");
+        return state;
+    };
     const io = {
-        now: Date.now,
-        setDeadline: (value) => { deadline = value; },
-        sleep,
-        log: (value) => console.log(JSON.stringify(value)),
-        async headSha(branch) {
-            const result = child("git", ["ls-remote", "--exit-code", "origin", `refs/heads/${branch}`], { timeout: remaining(15000) });
-            const value = result.split(/\s+/)[0];
-            if (!/^[a-f0-9]{40}$/.test(value)) throw new Error("REMOTE_HEAD_UNAVAILABLE");
-            return value;
-        },
+        now: Date.now, setDeadline: (value) => { deadline = value; }, sleep, log: (value) => console.log(JSON.stringify(value)),
+        async headSha(branch) { const result = child("git", ["ls-remote", "--exit-code", "origin", `refs/heads/${branch}`], { timeout: remaining(15000) }); const value = result.split(/\s+/)[0]; if (!/^[a-f0-9]{40}$/.test(value)) throw new Error("REMOTE_HEAD_UNAVAILABLE"); return value; },
         async verifyResourceIdentities() {
-            // These reads precede even the release lease: a mistaken control ID
-            // must never send the first UPDATE to a business database.
-            const databases = [
-                { id: profile.releaseDatabaseId, name: profile.manifest?.control?.releaseDatabase?.name },
-                { id: profile.d1DatabaseId, name: profile.profile?.database?.name },
-            ];
-            for (const expected of databases) {
-                if (!expected.id || !expected.name) throw new Error("D1_RESOURCE_IDENTITY_MISMATCH");
+            for (const expected of [{ id: profile.releaseDatabaseId, name: profile.profile?.releaseDatabase?.name }, { id: profile.d1DatabaseId, name: profile.profile?.database?.name }]) {
+                if (!expected.id || !expected.name || profile.releaseDatabaseId === profile.d1DatabaseId) throw new Error("D1_RESOURCE_IDENTITY_MISMATCH");
                 const database = await api(`${accountBase}/d1/database/${expected.id}`);
                 if (database?.uuid !== expected.id || database?.name !== expected.name) throw new Error("D1_RESOURCE_IDENTITY_MISMATCH");
             }
-            const expectedTitle = profile.profile?.state?.name;
+            for (const [id, name] of [[profile.appWorkerId, profile.appWorker], [profile.supportWorkerId, profile.supportWorker]]) {
+                const scripts = await api(`${accountBase}/workers/scripts-search?id=${encodeURIComponent(id)}&per_page=2`);
+                if (!Array.isArray(scripts) || scripts.length !== 1 || scripts[0]?.id !== id || scripts[0]?.script_name !== name) throw new Error("WORKER_RESOURCE_IDENTITY_MISMATCH");
+            }
+            const expectedTitle = profile.profile?.state?.name, seen = new Set();
             if (!profile.stateId || !expectedTitle) throw new Error("KV_RESOURCE_IDENTITY_MISMATCH");
-            const seen = new Set();
-            // Fail closed beyond 500 namespaces rather than making an unbounded
-            // account-wide scan. Namespace keys and values are never read.
             for (let page = 1; page <= 5; page++) {
                 const namespaces = await api(`${accountBase}/storage/kv/namespaces?page=${page}&per_page=100&order=id&direction=asc`);
                 if (!Array.isArray(namespaces) || namespaces.length > 100) throw new Error("KV_NAMESPACE_LIST_INVALID");
                 for (const namespace of namespaces) {
                     if (typeof namespace?.id !== "string" || !/^[a-f0-9]{32}$/.test(namespace.id) || /^0+$/.test(namespace.id) || typeof namespace.title !== "string" || seen.has(namespace.id)) throw new Error("KV_NAMESPACE_LIST_INVALID");
                     seen.add(namespace.id);
-                    if (namespace.id === profile.stateId) {
-                        if (namespace.title !== expectedTitle) throw new Error("KV_RESOURCE_IDENTITY_MISMATCH");
-                        return;
-                    }
+                    if (namespace.id === profile.stateId) { if (namespace.title !== expectedTitle) throw new Error("KV_RESOURCE_IDENTITY_MISMATCH"); return; }
                 }
                 if (namespaces.length < 100) throw new Error("KV_RESOURCE_IDENTITY_MISMATCH");
             }
             throw new Error("KV_NAMESPACE_LOOKUP_LIMIT");
         },
-        async acquireLease(leaseId, sha, expiresAt) {
-            const result = await control("UPDATE release_leases SET lease_id=?,release_sha=?,phase='lock',expires_at=?,pages_deployment_id=NULL,outcome='running',updated_at=? WHERE environment=? AND lease_id IS NULL", [leaseId, sha, expiresAt, Date.now(), profile.environment], true);
-            return result.meta?.changes === 1;
-        },
-        async assertLease(leaseId, sha) {
-            const lease = await readLease();
-            return lease?.lease_id === leaseId && lease.release_sha === sha && lease.outcome === "running" && lease.expires_at > Date.now();
-        },
-        async mark(leaseId, { stage, sha, expiresAt, pagesDeploymentId }) {
-            const result = await control("UPDATE release_leases SET phase=?,expires_at=?,pages_deployment_id=?,updated_at=? WHERE environment=? AND lease_id=? AND release_sha=? AND outcome='running'", [stage, expiresAt, pagesDeploymentId ?? null, Date.now(), profile.environment, leaseId, sha], true);
-            if (result.meta?.changes !== 1) throw new Error("RELEASE_LEASE_LOST");
-        },
-        async completeLease(leaseId, sha, pagesId) {
-            const result = await control("UPDATE release_leases SET lease_id=NULL,phase='complete',expires_at=NULL,pages_deployment_id=?,outcome='success',updated_at=? WHERE environment=? AND lease_id=? AND release_sha=? AND outcome='running'", [pagesId, Date.now(), profile.environment, leaseId, sha], true);
-            if (result.meta?.changes !== 1) throw new Error("RELEASE_LEASE_LOST");
-        },
-        async failLease(leaseId, { stage, uncertain, pagesDeploymentId }) {
-            await control("UPDATE release_leases SET lease_id=CASE WHEN ?=1 THEN lease_id ELSE NULL END,phase=?,pages_deployment_id=?,outcome=?,updated_at=? WHERE environment=? AND lease_id=?", [uncertain ? 1 : 0, stage, pagesDeploymentId ?? null, uncertain ? "blocked_uncertain" : "failed", Date.now(), profile.environment, leaseId], true);
-        },
+        async acquireLease(leaseId, sha, expiresAt) { const result = await control("UPDATE release_leases SET lease_id=?,release_sha=?,phase='lock',expires_at=?,app_version_id=NULL,support_version_id=NULL,outcome='running',updated_at=? WHERE environment=? AND lease_id IS NULL", [leaseId, sha, expiresAt, Date.now(), profile.environment], true); return result.meta?.changes === 1; },
+        async assertLease(leaseId, sha) { const lease = await readLease(); return lease?.lease_id === leaseId && lease.release_sha === sha && lease.outcome === "running" && lease.expires_at > Date.now(); },
+        async mark(leaseId, { stage, sha, expiresAt, appVersionId, supportVersionId }) { const result = await control("UPDATE release_leases SET phase=?,expires_at=?,app_version_id=?,support_version_id=?,updated_at=? WHERE environment=? AND lease_id=? AND release_sha=? AND outcome='running'", [stage, expiresAt, appVersionId ?? null, supportVersionId ?? null, Date.now(), profile.environment, leaseId, sha], true); if (result.meta?.changes !== 1) throw new Error("RELEASE_LEASE_LOST"); },
+        async completeLease(leaseId, sha, { appVersionId, supportVersionId }) { const result = await control("UPDATE release_leases SET lease_id=NULL,phase='complete',expires_at=NULL,app_version_id=?,support_version_id=?,outcome='success',updated_at=? WHERE environment=? AND lease_id=? AND release_sha=? AND outcome='running'", [appVersionId, supportVersionId, Date.now(), profile.environment, leaseId, sha], true); if (result.meta?.changes !== 1) throw new Error("RELEASE_LEASE_LOST"); },
+        async failLease(leaseId, { stage, uncertain, appVersionId, supportVersionId }) { await control("UPDATE release_leases SET lease_id=CASE WHEN ?=1 THEN lease_id ELSE NULL END,phase=?,app_version_id=?,support_version_id=?,outcome=?,updated_at=? WHERE environment=? AND lease_id=?", [uncertain ? 1 : 0, stage, appVersionId ?? null, supportVersionId ?? null, uncertain ? "blocked_uncertain" : "failed", Date.now(), profile.environment, leaseId], true); },
         async verifyRemoteConfiguration() {
-            const project = await api(pagesBase);
-            const source = project.source?.config;
-            if (project.id !== profile.pagesProjectId || project.name !== profile.pagesProject || project.production_branch !== profile.branch || project.source?.type !== "github") throw new Error("PAGES_PROJECT_IDENTITY_MISMATCH");
-            if (source?.owner?.toLowerCase() !== "vrclearn" || source?.repo_name?.toLowerCase() !== "vrclearn-store") throw new Error("PAGES_REPOSITORY_IDENTITY_MISMATCH");
-            if (source?.production_deployments_enabled !== false || source?.preview_deployment_setting !== "none") throw new Error("PAGES_UNCOORDINATED_DEPLOYMENTS_ENABLED");
-            for (const name of ["production", "preview"]) if (project.deployment_configs?.[name]?.fail_open !== false) throw new Error("PAGES_FAIL_OPEN_REJECTED");
-            if (project.deployment_configs?.production?.env_vars?.TURNSTILE_SECRET_KEY?.type !== "secret_text") throw new Error("PAGES_RUNTIME_SECRET_MISSING");
             if (!variables.CF_ACCESS_CLIENT_ID || !variables.CF_ACCESS_CLIENT_SECRET) throw new Error("RELEASE_SMOKE_CREDENTIALS_MISSING");
             if (profile.releaseDatabaseId === profile.d1DatabaseId) throw new Error("RELEASE_CONTROL_IS_BUSINESS_DATABASE");
+            for (const kind of ["support", "app"]) { verifyWorkerBindings(profile, await api(`${workerBase(kind)}/settings`), kind); await verifyEndpoints(kind); }
         },
         async runChecks(sha) {
-            configurations = await generateDeployment(profile.environment, { releaseSha: sha, branch: profile.branch, projectName: profile.pagesProject });
+            configurations = await generateDeployment(profile.environment, { releaseSha: sha, branch: profile.branch, workerName: profile.appWorker });
             const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-            const invoke = (args) => {
-                const result = spawnSync(npm, args, { cwd: repositoryRoot, env: { ...process.env, DEPLOYMENT_ENV: profile.environment }, shell: process.platform === "win32", encoding: "utf8", timeout: remaining(180000), maxBuffer: 4 * 1024 * 1024, windowsHide: true });
-                if (result.error || result.status !== 0) throw new Error("RELEASE_CHECK_FAILED");
-            };
-            invoke(["test"]); invoke(["run", "build"]); invoke(["run", "preflight"]);
+            const env = { ...process.env, DEPLOYMENT_ENV: profile.environment, RELEASE_SHA: sha, WORKER_NAME: profile.appWorker, VRCLEARN_APP_CONFIG: configurations.appConfigPath, VRCLEARN_SUPPORT_CONFIG: configurations.supportConfigPath };
+            for (const args of [["test"], ["run", "build"], ["run", "preflight"]]) { const result = spawnSync(npm, args, { cwd: repositoryRoot, env, shell: process.platform === "win32", encoding: "utf8", timeout: remaining(180000), maxBuffer: 4 * 1024 * 1024, windowsHide: true }); if (result.error || result.status !== 0) throw new Error("RELEASE_CHECK_FAILED"); }
         },
-        async localMigrations() {
-            return Promise.all((await readdir(resolve(repositoryRoot, "migrations"))).filter((name) => name.endsWith(".sql")).map(async (name) => ({ name, sql: await readFile(resolve(repositoryRoot, "migrations", name), "utf8") })));
+        async localMigrations() { return Promise.all((await readdir(resolve(repositoryRoot, "migrations"))).filter((name) => name.endsWith(".sql")).map(async (name) => ({ name, sql: await readFile(resolve(repositoryRoot, "migrations", name), "utf8") }))); },
+        async appliedMigrations() {
+            const tables = (await query(profile.d1DatabaseId, "SELECT name FROM sqlite_master WHERE type IN ('table','view','trigger') AND name NOT GLOB 'sqlite_*' AND name NOT GLOB '_cf_*'")).results.map((row) => row.name);
+            const names = tables.includes("d1_migrations") ? (await query(profile.d1DatabaseId, "SELECT name FROM d1_migrations ORDER BY id")).results.map((row) => row.name) : [];
+            if (!names.length && tables.some((name) => name !== "d1_migrations")) throw new Error("MIGRATION_DATABASE_NOT_EMPTY");
+            return names;
         },
-        async appliedMigrations() { return (await query(profile.d1DatabaseId, "SELECT name FROM d1_migrations ORDER BY id")).results.map((row) => row.name); },
-        async migrationChecksums() {
-            return Object.fromEntries((await control("SELECT name,digest FROM release_migration_checksums WHERE environment=?", [profile.environment])).results.map((row) => [row.name, row.digest]));
+        async migrationChecksums() { return Object.fromEntries((await control("SELECT name,digest FROM release_migration_checksums WHERE environment=?", [profile.environment])).results.map((row) => [row.name, row.digest])); },
+        async applyMigration(migration) { const ledger = { sql: "CREATE TABLE IF NOT EXISTS d1_migrations(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)", params: [] }; await d1(profile.d1DatabaseId, [...(migration.initial ? [ledger] : []), ...migration.statements.map((sql) => ({ sql, params: [] })), { sql: "INSERT INTO d1_migrations(name) VALUES(?)", params: [migration.name] }], true); },
+        async recordMigration(migration) { await control("INSERT INTO release_migration_checksums(environment,name,digest) VALUES(?,?,?)", [profile.environment, migration.name, migration.digest], true); },
+        deploySupport: (sha) => deploy("support", sha), deployApp: (sha) => deploy("app", sha),
+        async verifyPublished({ sha, appVersionId, supportVersionId }) {
+            for (const [kind, versionId] of [["app", appVersionId], ["support", supportVersionId]]) { const state = await workerState(kind); if (state.sha !== sha || state.versionId !== versionId || state.environment !== profile.environment) throw new Error("WORKER_POST_DEPLOY_MISMATCH"); verifyWorkerBindings(profile, state.settings, kind); await verifyEndpoints(kind); }
         },
-        async applyMigration(migration) {
-            // D1's batch executes the schema and ledger update atomically.
-            await d1(profile.d1DatabaseId, [...migration.statements.map((sql) => ({ sql, params: [] })), { sql: "INSERT INTO d1_migrations(name) VALUES(?)", params: [migration.name] }], true);
-        },
-        async recordMigration(migration) {
-            await control("INSERT INTO release_migration_checksums(environment,name,digest) VALUES(?,?,?)", [profile.environment, migration.name, migration.digest], true);
-        },
-        async deploySupport(sha) {
-            if (!configurations?.supportConfigPath || !existsSync(configurations.supportConfigPath)) throw new Error("SUPPORT_CONFIG_NOT_GENERATED");
-            child(process.execPath, [resolve(repositoryRoot, "node_modules/wrangler/bin/wrangler.js"), "deploy", "--config", configurations.supportConfigPath, "--strict"], { timeout: remaining(120000), env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: profile.accountId, WRANGLER_SEND_METRICS: "false" } });
-            const state = await supportState();
-            verifySupportBindings(profile, state.settings);
-            if (state.environment !== profile.environment || state.sha !== sha) throw new Error("SUPPORT_RELEASE_IDENTITY_MISMATCH");
-            return state;
-        },
-        async setPagesRelease(sha) {
-            // A partial env_vars PATCH updates these public metadata keys only;
-            // never round-trip secret entries returned by the read API.
-            const before = await api(pagesBase);
-            const secrets = Object.entries(before.deployment_configs?.production?.env_vars ?? {}).filter(([, entry]) => entry.type === "secret_text").map(([name]) => name);
-            await api(pagesBase, { method: "PATCH", body: { deployment_configs: { production: { env_vars: {
-                RELEASE_SHA: { type: "plain_text", value: sha }, DEPLOYMENT_ENV: { type: "plain_text", value: profile.environment }, PAGES_PROJECT_NAME: { type: "plain_text", value: profile.pagesProject },
-            } } } } });
-            const after = await api(pagesBase);
-            if (secrets.some((name) => after.deployment_configs?.production?.env_vars?.[name]?.type !== "secret_text")) throw new Error("PAGES_SECRET_RETENTION_UNCONFIRMED");
-        },
-        async startPages(branch, sha) {
-            const form = new FormData(); form.set("branch", branch); form.set("commit_hash", sha); form.set("commit_dirty", "false");
-            return api(`${pagesBase}/deployments`, { method: "POST", body: form });
-        },
-        async pagesDeployment(id) {
-            const result = await api(`${pagesBase}/deployments/${encodeURIComponent(id)}`);
-            return { sha: result.deployment_trigger?.metadata?.commit_hash, branch: result.deployment_trigger?.metadata?.branch, status: result.latest_stage?.status, skipped: result.is_skipped === true };
-        },
-        async verifyPublished({ sha, workerVersionId, pagesDeploymentId }) {
-            const [worker, project] = await Promise.all([supportState(), api(pagesBase)]);
-            if (worker.sha !== sha || worker.versionId !== workerVersionId || worker.environment !== profile.environment) throw new Error("SUPPORT_POST_DEPLOY_MISMATCH");
-            verifySupportBindings(profile, worker.settings);
-            verifyPagesBindings(profile, project.deployment_configs.production);
-            const canonical = project.canonical_deployment;
-            if (canonical?.id !== pagesDeploymentId || canonical.deployment_trigger?.metadata?.commit_hash !== sha) throw new Error("PAGES_CANONICAL_MISMATCH");
-            await io.verifyRemoteConfiguration();
-        },
-        async smoke({ sha, pagesDeploymentId }) {
-            const deployment = await readSmokeDeployment(pagesDeploymentId);
-            const preview = new URL(deployment.url);
-            if (preview.protocol !== "https:" || !preview.hostname.endsWith(`.${profile.pagesProject}.pages.dev`)) throw new Error("PAGES_PREVIEW_ORIGIN_MISMATCH");
-            const anonymous = [
-                ["site", profile.origin + "/en"], ["api", profile.origin + "/api/v1/config"], ["media", profile.mediaOrigin + "/intl/release-probe"],
-                ["default", `https://${profile.pagesProject}.pages.dev/en`], ["preview", preview.origin + "/en"],
-            ];
-            for (const [target, url] of anonymous) {
-                const { response } = await smokeGet(target, url, { transport, remaining, sleep });
-                try { await response.body?.cancel(); } catch { /* No response body is needed for Access redirects. */ }
+        async smoke({ sha }) {
+            for (const [target, url] of [["site", profile.origin + "/en"], ["api", profile.origin + "/api/v1/config"], ["media", profile.mediaOrigin + "/intl/release-probe"]]) {
+                const { response } = await smokeGet(target, url, { transport, remaining, sleep }); try { await response.body?.cancel(); } catch { /* No body is needed. */ }
                 if (response.status !== 302) throw new Error(smokeFailureCodes[target].http);
-                const location = response.headers.get("location");
-                let authorizedRedirect = false;
-                try { authorizedRedirect = Boolean(location && new URL(location).hostname.endsWith(".cloudflareaccess.com")); } catch { /* Treat malformed redirects as a semantic failure. */ }
-                if (!authorizedRedirect) throw new Error(smokeFailureCodes[target].access);
+                let valid = false; try { valid = new URL(response.headers.get("location")).hostname.endsWith(".cloudflareaccess.com"); } catch { /* Fail closed. */ }
+                if (!valid) throw new Error(smokeFailureCodes[target].access);
             }
             const { response, config } = await smokeGet("config", profile.origin + "/api/v1/config", { transport, remaining, sleep, headers: { "CF-Access-Client-Id": variables.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": variables.CF_ACCESS_CLIENT_SECRET } });
-            if (response.status === 302 || response.status === 401 || response.status === 403) throw new Error(smokeFailureCodes.config.access);
-            if (!response.ok) throw new Error(smokeFailureCodes.config.http);
+            if ([302, 401, 403].includes(response.status)) throw new Error("SMOKE_CONFIG_ACCESS_FAILED");
+            if (!response.ok) throw new Error("SMOKE_CONFIG_HTTP_FAILED");
             if (!response.headers.get("content-type")?.includes("application/json")) throw new Error("SMOKE_CONFIG_RESPONSE_INVALID");
             if (config?.releaseSha !== sha || config?.deploymentEnvironment !== profile.environment) throw new Error("SMOKE_CONFIG_RELEASE_MISMATCH");
         },

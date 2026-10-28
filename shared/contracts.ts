@@ -6,7 +6,6 @@ export interface SessionUser {
     email: string;
     // Better Auth's name field is the public display name, not a username or login identifier.
     name: string;
-    emailVerified: boolean;
     role: "user" | "admin";
     banned: boolean;
 }

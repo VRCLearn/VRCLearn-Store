@@ -1,5 +1,0 @@
-{
-    "version": 1,
-    "include": ["/api/v1/*", "/api/auth/*", "/en/products/*", "/zh-CN/products/*", "/ja/products/*", "/en/shops/*", "/zh-CN/shops/*", "/ja/shops/*", "/sitemap.xml", "/sitemaps/*"],
-    "exclude": ["/assets/*", "/maintenance.html", "/robots.txt", "/favicon.svg"]
-}

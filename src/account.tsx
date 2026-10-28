@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { useSearchParams } from "react-router";
 import { createAuthClient } from "better-auth/react";
 import type { SessionUser } from "../shared/contracts";
-import { Card, Button, Field, Tabs, LinkButton, Icon } from "./material";
+import { Card, Field, Tabs, LinkButton, Icon } from "./material";
 import { ApiError } from "./api";
 import { Verification } from "./turnstile";
 import { ActionButton, Busy, currentUser, Form, Notice, useAction, useLocale } from "./ui";
@@ -18,10 +17,13 @@ export function checked<T>(result: AuthResult<T>): T {
 export function AccountPage() {
     const { t, path } = useLocale();
     const [user, setUser] = useState<SessionUser | null>();
-    const [mode, setMode] = useState<"login" | "register" | "forgot">("login");
+    const [mode, setMode] = useState<"login" | "register">("login");
     const [email, setEmail] = useState("");
     const [password, setPassword] = useState("");
     const [displayName, setDisplayName] = useState("");
+    const [currentPassword, setCurrentPassword] = useState("");
+    const [newPassword, setNewPassword] = useState("");
+    const [confirmPassword, setConfirmPassword] = useState("");
     const [token, setToken] = useState("");
     const [verificationKey, setVerificationKey] = useState(0);
     const action = useAction();
@@ -33,16 +35,20 @@ export function AccountPage() {
             const fetchOptions = { headers: { "x-turnstile-token": token } };
             try {
                 if (mode === "register") {
-                    checked(await auth.signUp.email({ name: displayName, email, password, callbackURL: `${location.origin}${path("/account")}`, fetchOptions }));
-                    action.setMessage(t.verificationSent); setPassword("");
-                } else if (mode === "forgot") {
-                    checked(await auth.requestPasswordReset({ email, redirectTo: `${location.origin}${path("/reset-password")}`, fetchOptions }));
-                    action.setMessage(t.resetSent);
+                    checked(await auth.signUp.email({ name: displayName, email, password, fetchOptions }));
                 } else {
                     checked(await auth.signIn.email({ email, password, fetchOptions }));
-                    setUser(await currentUser()); setPassword("");
                 }
+                setUser(await currentUser()); setPassword("");
             } finally { setToken(""); setVerificationKey((key) => key + 1); }
+        });
+    }
+    async function changePassword() {
+        await action.run(async () => {
+            if (newPassword !== confirmPassword) throw new Error(t.passwordMismatch);
+            checked(await auth.changePassword({ currentPassword, newPassword, revokeOtherSessions: true }));
+            setCurrentPassword(""); setNewPassword(""); setConfirmPassword("");
+            action.setMessage(t.passwordChanged);
         });
     }
     return <>
@@ -51,39 +57,33 @@ export function AccountPage() {
         {user === undefined && action.busy ? <Busy /> : user ? <Card className="auth-panel panel">
             <div className="shop-avatar" aria-hidden="true">{user.name.slice(0, 1)}</div>
             <h2>{user.name}</h2><p>{user.email}</p>
-            <span className="status-pill">{user.emailVerified ? t.verified : t.unverified}</span>
             <div className="account-links">
                 <LinkButton variant="tonal" icon="favorite" href={path("/favorites")}>{t.favorites}</LinkButton>
                 <LinkButton variant="tonal" icon="storefront" href={path("/merchant")}>{t.merchant}</LinkButton>
                 {user.role === "admin" && <LinkButton variant="tonal" icon="shield" href={path("/admin")}>{t.admin}</LinkButton>}
             </div>
+            <details className="account-session-actions"><summary>{t.changePassword}</summary>
+                <Form onSubmit={changePassword}>
+                    <Field label={t.currentPassword} type="password" value={currentPassword} onChange={setCurrentPassword} required minLength={12} maxLength={128} autoComplete="current-password" />
+                    <Field label={t.newPassword} type="password" value={newPassword} onChange={setNewPassword} required minLength={12} maxLength={128} autoComplete="new-password" />
+                    <Field label={t.confirmPassword} type="password" value={confirmPassword} onChange={setConfirmPassword} required minLength={12} maxLength={128} autoComplete="new-password" />
+                    <ActionButton busy={action.busy} type="submit">{t.changePassword}</ActionButton>
+                </Form>
+            </details>
             <details className="account-session-actions"><summary>{t.sessionSettings}</summary><div className="button-row">
                 <ActionButton busy={action.busy} variant="outlined" onClick={() => { void action.run(async () => { checked(await auth.revokeOtherSessions()); action.setMessage(t.success); }); }}>{t.revokeSessions}</ActionButton>
             </div></details>
             <ActionButton busy={action.busy} variant="text" onClick={() => { void action.run(async () => { checked(await auth.signOut()); setUser(null); }); }}>{t.logout}</ActionButton>
         </Card> : <Card className="auth-panel panel">
-            <Tabs tabs={[{ value: "login", label: t.login }, { value: "register", label: t.register }]} value={mode === "register" ? "register" : "login"} onChange={(value) => changeMode(value === "register" ? "register" : "login")} />
-            <div className="auth-heading"><Icon name="account_circle" size={32} /><h2>{mode === "register" ? t.register : mode === "forgot" ? t.reset : t.login}</h2>{mode !== "forgot" && <p>{mode === "register" ? t.accountRegisterHint : t.accountLoginHint}</p>}</div>
+            <Tabs tabs={[{ value: "login", label: t.login }, { value: "register", label: t.register }]} value={mode} onChange={(value) => changeMode(value === "register" ? "register" : "login")} />
+            <div className="auth-heading"><Icon name="account_circle" size={32} /><h2>{mode === "register" ? t.register : t.login}</h2><p>{mode === "register" ? t.accountRegisterHint : t.accountLoginHint}</p></div>
             <Form onSubmit={loginOrRegister}>
                 {mode === "register" && <Field label={t.displayName} value={displayName} onChange={setDisplayName} required maxLength={100} autoComplete="nickname" />}
                 <Field label={t.email} type="email" value={email} onChange={setEmail} required maxLength={254} autoComplete="email" />
-                {mode !== "forgot" && <Field label={t.password} type="password" value={password} onChange={setPassword} required minLength={12} maxLength={128} autoComplete={mode === "register" ? "new-password" : "current-password"} />}
+                <Field label={t.password} type="password" value={password} onChange={setPassword} required minLength={12} maxLength={128} autoComplete={mode === "register" ? "new-password" : "current-password"} />
                 <Verification key={verificationKey} onToken={setToken} t={t} />
-                <ActionButton busy={action.busy} type="submit" disabled={!token}>{mode === "register" ? t.register : mode === "forgot" ? t.reset : t.login}</ActionButton>
-                {mode === "login" && <Button variant="text" onClick={() => changeMode("forgot")}>{t.forgot}</Button>}
-                {mode !== "forgot" && <Button variant="text" disabled={action.busy || !token || !email} onClick={() => { void action.run(async () => {
-                    try { checked(await auth.sendVerificationEmail({ email, callbackURL: `${location.origin}${path("/account")}`, fetchOptions: { headers: { "x-turnstile-token": token } } })); action.setMessage(t.verificationSent); }
-                    finally { setToken(""); setVerificationKey((key) => key + 1); }
-                }); }}>{t.resend}</Button>}
+                <ActionButton busy={action.busy} type="submit" disabled={!token}>{mode === "register" ? t.register : t.login}</ActionButton>
             </Form>
         </Card>}
     </>;
-}
-export function ResetPasswordPage() {
-    const { t, path } = useLocale();
-    const [params] = useSearchParams();
-    const [password, setPassword] = useState("");
-    const action = useAction();
-    const token = params.get("token");
-    return <Card className="auth-panel panel"><h1>{t.reset}</h1><Notice error={action.error} message={action.message} />{token ? <Form onSubmit={() => action.run(async () => { checked(await auth.resetPassword({ newPassword: password, token })); setPassword(""); action.setMessage(t.success); })}><Field label={t.newPassword} value={password} onChange={setPassword} type="password" required minLength={12} maxLength={128} autoComplete="new-password" /><ActionButton busy={action.busy} type="submit">{t.reset}</ActionButton></Form> : <p>{t.tokenMissing}</p>}<LinkButton href={path("/account")} variant="text">{t.login}</LinkButton></Card>;
 }

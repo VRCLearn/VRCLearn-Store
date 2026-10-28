@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { detailPage, sitemapPage } from "../edge/ssr";
 import { edgeRequest, testEnvironment } from "./helpers";
-import type { AppEnv } from "../server/env";
 
 describe("region-scoped HTML and sitemap", () => {
     let fixture: ReturnType<typeof testEnvironment>;
@@ -25,7 +24,7 @@ describe("region-scoped HTML and sitemap", () => {
         fixture.database.prepare("INSERT INTO publications(product_id,region,revision_id,media_token,active,updated_at,category,pricing,currency,price) VALUES(?,'cn',?,'ssr-fixture',1,?,'avatars','paid','USD',10)").run(productId, revision, time);
     });
     afterEach(async () => { await Promise.all(pending.splice(0)); fixture.database.close(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
-    const context = (request: Request) => Object.assign({} as EventContext<AppEnv, string, unknown>, { request, env: fixture.env, waitUntil: (promise: Promise<unknown>) => pending.push(promise) });
+    const context = (request: Request) => ({ request, env: fixture.env, ctx: { waitUntil: (promise: Promise<unknown>) => { pending.push(promise); } } });
     it("returns searchable HTML, safe Markdown, JSON-LD and a nonce before JavaScript", async () => {
         const response = await detailPage(context(edgeRequest(`/zh-CN/products/${productId}`)), "product");
         expect(response.status).toBe(200);
@@ -87,20 +86,31 @@ describe("region-scoped HTML and sitemap", () => {
         expect((await detailPage(context(edgeRequest(`/en/products/${productId}`, { country: "JP" })), "product")).status).toBe(404);
         expect(await (await sitemapPage(context(edgeRequest("/sitemaps/en.xml", { country: "JP" })))).text()).not.toContain(productId);
     });
-    it.each(["maintenance", "kv-failure"])("stops cached HTML and every sitemap before cache or database access on %s", async (failure) => {
+    it("does not reuse a previous release's HTML and static bundle references", async () => {
+        expect(await (await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).text()).toContain("星空 Avatar");
+        await Promise.all(pending.splice(0));
+        fixture.database.prepare("UPDATE product_revisions SET content_json=json_set(content_json,'$.title','Next release') WHERE product_id=?").run(productId);
+        expect(await (await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).text()).toContain("星空 Avatar");
+        fixture.env.RELEASE_SHA = "b".repeat(40);
+        expect(await (await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).text()).toContain("<h1>Next release</h1>");
+    });
+    it("keeps structurally valid opaque IDs eligible for lookup without requiring UUID syntax", async () => {
+        const response = await detailPage(context(edgeRequest("/en/products/legacy-product-id")), "product");
+        expect(response.status).toBe(404);
+        expect(fixture.queries.some((query) => query.values.includes("legacy-product-id"))).toBe(true);
+    });
+    it("stops cached catalog HTML and locale sitemaps before cache or database access when invalidation state is unavailable", async () => {
         expect((await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).status).toBe(200);
         expect((await detailPage(context(edgeRequest(`/en/shops/${shopId}`)), "shop")).status).toBe(200);
         expect((await sitemapPage(context(edgeRequest("/sitemaps/en.xml")))).status).toBe(200);
         await Promise.all(pending.splice(0));
         const cache = vi.spyOn(caches.default, "match");
         const before = fixture.queries.length;
-        if (failure === "maintenance") fixture.state.set("budget:state", JSON.stringify({ mode: "maintenance", updatedAt: new Date().toISOString() }));
-        else vi.spyOn(fixture.env.STATE, "get").mockRejectedValue(new Error("KV unavailable"));
+        vi.spyOn(fixture.env.STATE, "get").mockRejectedValue(new Error("KV unavailable"));
         for (const method of ["GET", "HEAD"]) {
             const responses = [
                 await detailPage(context(edgeRequest(`/en/products/${productId}`, { method })), "product"),
                 await detailPage(context(edgeRequest(`/en/shops/${shopId}`, { method })), "shop"),
-                await sitemapPage(context(edgeRequest("/sitemap.xml", { method }))),
                 await sitemapPage(context(edgeRequest("/sitemaps/en.xml", { method }))),
             ];
             for (const response of responses) {
@@ -112,5 +122,11 @@ describe("region-scoped HTML and sitemap", () => {
         }
         expect(cache).not.toHaveBeenCalled();
         expect(fixture.queries).toHaveLength(before);
+        expect((await sitemapPage(context(edgeRequest("/sitemap.xml")))).status).toBe(200);
+    });
+    it("only reads catalog invalidation state when rendering a public detail", async () => {
+        const get = vi.spyOn(fixture.env.STATE, "get");
+        expect((await detailPage(context(edgeRequest(`/en/products/${productId}`)), "product")).status).toBe(200);
+        expect(get.mock.calls.map(([key]) => key)).toEqual(["catalog:version"]);
     });
 });

@@ -35,12 +35,19 @@ describe("automatic migration boundary", () => {
         expect(() => validateAutomaticMigration("0005_x.sql", statements[0].sql + "DELETE FROM x;")).toThrow("MIGRATION_REQUIRES_REVIEW");
         expect(() => migrationStatements("CREATE TABLE x(a TEXT DEFAULT 'unclosed);")).toThrow("UNCLOSED");
     });
-    it("requires the manual bootstrap and rejects edits to applied history", () => {
+    it("allows the fixed initial schema once and rejects edits to applied history", () => {
         const names = baseline.map((file) => file.name);
-        expect(() => migrationPlan(baseline, names.slice(0, 3))).toThrow("BOOTSTRAP");
+        expect(migrationPlan(baseline, [])).toMatchObject([{ name: "0001_initial.sql", initial: true }]);
+        expect(() => migrationPlan(baseline, ["0002_unknown.sql"])).toThrow("HISTORY_MISSING");
         expect(() => migrationPlan(baseline.map((file, index) => index ? file : { ...file, sql: file.sql + "\n-- changed" }), names)).toThrow("BASELINE_CHANGED");
         expect(migrationPlan([...baseline, { name: "0005_widgets.sql", sql: "CREATE TABLE widgets(id TEXT);" }], names)).toHaveLength(1);
         expect(migrationDigest("a\r\nb")).toBe(migrationDigest("a\nb"));
+    });
+    it("keeps trigger bodies in one initial statement and never whitelists triggers as incremental migrations", () => {
+        const statements = migrationStatements("CREATE TRIGGER sample AFTER INSERT ON items BEGIN UPDATE items SET id = CASE WHEN NEW.id IS NULL THEN 'x' ELSE NEW.id END; INSERT INTO log VALUES('done;'); END; CREATE INDEX sample_index ON items(id);");
+        expect(statements).toHaveLength(2);
+        expect(() => validateAutomaticMigration("0002_trigger.sql", statements[0].sql)).toThrow("REQUIRES_REVIEW");
+        expect(() => migrationStatements("CREATE TRIGGER sample AFTER INSERT ON items BEGIN SELECT 1;")).toThrow("TRIGGER_UNCLOSED");
     });
     it("requires recorded checksums for every automatically applied migration", () => {
         const file = { name: "0005_widgets.sql", sql: "CREATE TABLE widgets(id TEXT);" };
@@ -48,5 +55,6 @@ describe("automatic migration boundary", () => {
         const names = files.map((entry) => entry.name);
         expect(() => migrationPlan(files, names)).toThrow("HISTORY_CHANGED");
         expect(migrationPlan(files, names, { [file.name]: migrationDigest(file.sql) })).toEqual([]);
+        expect(() => validateAutomaticMigration("0000_before_initial.sql", file.sql)).toThrow("MIGRATION_NAME_REJECTED");
     });
 });

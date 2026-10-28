@@ -1,63 +1,57 @@
 # VRCLearn Store
 
-React、TypeScript、Material Web（MD3）和 Cloudflare Pages 构建的 VRChat 商品目录。商家直接入驻，区域发布权限与每次发布分别审核；用户搜索、收藏、举报并前往外站购买。不提供支付和聊天。
+面向 VRChat 创作者与用户的商品展示、搜索和导购平台。使用 React、TypeScript、Material Web、Cloudflare Workers Static Assets、D1、R2、KV 和 Durable Objects。购买在外部商家网站完成，平台不处理支付或聊天。
 
-## 本地使用
+项目只允许内部测试环境发布，生产环境未开通。源代码和环境清单保留 `test` 与 `main` 的结构；合并到 `main` 不会创建或发布生产资源。线上状态须通过实际部署和验收记录确认，不能由配置文件推断。
 
-需要 Node.js 24 或更新版本。
+## 本地运行
 
-```powershell
-npm.cmd ci
-npm.cmd run dev
+使用 Node.js 24 和锁文件安装依赖：
+
+```sh
+npm ci
+npm run types
+npx wrangler d1 migrations apply local-vrclearn-store --local --config deployment/local-app.jsonc
+npm run dev
 ```
 
-`dev` 运行静态界面。尚未启动本地 Cloudflare 服务时，动态操作会明确显示服务不可用，不会显示模拟商品或假成功。
+本地站点为 `http://127.0.0.1:4173/zh-CN`。Vite 使用 Workers 运行时及本地绑定，同时启动主 Worker 和辅助 Worker；不连接云端业务数据库或媒体桶。本地开发 Secret 放在被忽略的 `deployment/.dev.vars`，设置独立的 `BETTER_AUTH_SECRET` 和测试用 `TURNSTILE_SECRET_KEY`，不要使用云端秘密。
 
-```powershell
-npm.cmd run build
-npm.cmd test
-npm.cmd run test:capacity
-npm.cmd run test:browser
+```sh
+npm run check
+npm test
+npm run build
+npm run preflight
+npm run test:browser
+npm run test:capacity
 ```
 
-浏览器验收使用本机 Chrome，以独立无头会话运行。`test:capacity` 使用内存 SQLite 创建 100 家商家、10,000 件商品，验证查询计划、FTS 与游标分页，不访问真实 Cloudflare 资源。
+构建输出为 `dist/client`、`dist/app/wrangler.json` 和 `dist/support/wrangler.json`。`npm run preview` 在同一端口运行构建产物。测试使用独立本地数据；容量测试在内存 SQLite 中建立约 100 家商家、10,000 件商品，不访问真实 Cloudflare 资源。
 
-## 架构
+## 产品与权限
 
-- `src/`：三语静态 React 应用、Material Web 控件与按路由加载的页面。
-- `functions/`、`edge/`：有限动态路由、地区隔离的 HTML 缓存与安全输出。
-- `server/`：共享业务服务、D1 查询、审核与 R2 图片发布。
-- `worker/`：Better Auth、原生密码计算、会话管理、Durable Object 配额与有界维护任务。
-- `control/`：独立账户费用监控、状态分发及指定入口紧急停机。
-- `deployment/`、`scripts/release*.mjs`：环境清单、隔离预检与串行自动发布。
-- `migrations/`：业务和认证 D1 迁移。
-- `public/_routes.json`：明确指定动态入口。首页、搜索界面、后台界面与静态资源不会执行 Pages Functions。
+- 三语界面：简体中文、英文、日文；商品保留商家原文，界面语言不改变商品区域。
+- 邮箱与密码注册、登录；只设置昵称，不设置 username。不发送邮箱验证或找回密码邮件，不验证邮箱所有权，不提供 MFA。已登录用户可修改密码和撤销会话。
+- 商家自行入驻，每账户一个店铺；地区发布权限、商品发布、修订及公开店铺资料均须审核。
+- CN 与国际区由服务端根据可信 IP 国家信息决定；未知地区拒绝商品查询。Adult 商品只能提交国际区审核，已有 CN 上架时须先下架 CN 才能提交 Adult 修订。
+- 搜索、筛选、收藏、举报、首页推荐与横幅展示；图片只托管商品展示内容，不托管模型文件或视频。
 
-首页自动推荐最多 6 件当前地区可见的已上架商品，初期从本区最近 96 件活动上架商品中按资料完整度排序，算法后续完善；仅加载时请求一次，空位和请求失败均保留静态内容。静态横幅支持横向滑动与按钮切换，后续可承载广告内容。收藏与商家工作台位于头像下拉菜单，展开菜单不查询登录态。
+管理员权限依据内部账户 ID 和明确授予的角色，不因输入某个邮箱而自动获得。未来使用 Loginflare 替换身份认证；本期不实现统一登录、自动关联或账户迁移。
 
-商品和店铺详情在源 HTML 中输出内容与元数据，客户端沿用同一份初始数据。服务端按大陆 CN／其他地区过滤；界面语言不会改变商品区。动态 HTML 只在应用控制的地区缓存键下缓存，对外响应不允许共享代理缓存。
+## 代码与发布
 
-首次发布按区独立生效；内容修订须通过所有当前上架地区的审核后统一替换，新申请地区待审或拒绝不会额外阻止已有地区的换版。Adult 商品可在国际区提交审核，不可提交中国大陆区审核；已有大陆区上架的商品提交 Adult 修订前须先下架大陆区。同内容首次申请新区可复用已发布修订；已作出最终决定的地区重新申请时，先保存新修订，保留原决定。部分上架后撤回未决审核、下架或撤权不会撤销其他仍有效的地区。
+`app/` 是主 Worker 入口；`server/` 保存共享业务服务，API 与详情 HTML 直接调用这些服务。`worker/` 提供内部认证、业务配额和有界清理。静态界面由 Material Web 组件组成，主题与滚动条集中管理。
 
-当前账户使用邮箱与密码登录，仅设置昵称／显示名，不设置 username。Better Auth 的 `name` 字段保存昵称，不作为登录标识；内部账户 ID 独立于登录方式。管理员需要已验证邮箱、有效会话、明确授予的管理员角色且未被封禁。后续对接 HopeWriteDream 的 Logto 账号体系，本期不实现统一登录迁移。账户认证变更及数据库迁移须在授权部署后完成线上验收，详见 [运维说明](docs/operations.md)。
+`deployment/environments.json` 是云端资源身份的权威清单。未配置或未开通的环境拒绝发布；测试资源以 `test-` 开头。测试从新建空库和空媒体桶开始，不复制旧账户、会话、媒体或配额状态。
 
-按钮、菜单、选择器、筛选项、标签页、卡片、徽标、对话框、滑块和表单直接使用 Material Web（卡片与徽标使用依赖中的 labs 组件）；自定义 CSS 仅负责布局、主题 token 与库中没有提供的内容。外观设置支持系统／浅色／深色、主题色 HEX、HCT 调整和九种配色风格，通过官方 Material Color Utilities 生成完整主题并在本机保存。`generate:theme` 在开发和构建前生成默认配色，不依赖远程字体或图标服务。
+Cloudflare Workers Builds 从 `test` 分支执行校验、测试、一次构建、安全迁移、辅助 Worker 和主 Worker 发布、版本读回及冒烟。无需部署用 GitHub Actions；业务运行时不持有部署凭据。详情见 [架构](docs/architecture.md)、[运维说明](docs/operations.md) 和 [费用与容量](docs/costs.md)。
 
-## 配置与内部测试
+当前没有账户账单监控、自动预算告警或按美元阈值停机机制；保留业务配额、限流、CPU 限制和有界后台任务。这些不构成账单上限。
 
-项目保持生产候选、测试两套独立业务环境：`main` 对应 [store.vrclearn.com](https://store.vrclearn.com)，`test` 对应 [test-store.vrclearn.com](https://test-store.vrclearn.com)。测试资源统一以 `test-` 开头，D1、R2、KV、DO、认证密钥、限流、Turnstile 和 Access 分别独立。内测可经明确授权复制账户、密码哈希、业务记录及媒体到测试资源，排除全部会话和一次性验证记录；不会持续同步数据。两套继续保持内部 Access 保护，用户范围为 `@vrclearn.com`；Access 准入不授予商店管理权限。
+## 正式公开前
 
-两分支共用业务代码与 `deployment/environments.json` 环境清单。`test` 验证后直接 PR 合入 `main`，不改环境配置、不复制数据，生产重新校验和构建。Cloudflare Workers Builds 协调迁移、辅助 Worker 和 Pages 原生 Git 发布；Pages 独立推送／预览触发关闭，不使用 GitHub Actions 或 Pages Direct Upload。
+正式公开、移除 Access 或开放公众访问前，必须提醒所有者清空内测数据库，并核对测试媒体和配额的处理范围。实际删除仍须另行明确授权，随后初始化正式管理员。见 [正式公开上线前](docs/operations.md#正式公开上线前)。
 
-环境配置由 `scripts/environment.mjs` 生成，错误分支、项目身份、SHA 或跨环境业务引用会停止发布。发布锁和迁移校验和独立存储，结果不明时先读回、人工解锁，不盲目重试。预检和本地测试不能证明远端配置或部署已完成；完整命令、首次切换及恢复见 [运维说明](docs/operations.md)，资源边界见 [架构](docs/architecture.md)。
+## 许可证
 
-仓库不保留根目录或 `worker/` 默认 Wrangler 配置。本地仅使用显式指定 `deployment/local-*.jsonc` 的 npm 脚本，云端使用经环境校验后生成的配置；不支持裸 Wrangler 命令，也不提供生产默认回退。静态和动态页面的图片 CSP 均只允许当前环境的媒体来源。
-
-账户总费用由独立监控 Worker 统一保护，包含同账户的其他项目，保留 10 美元告警、15 美元受限、18 美元维护和人工恢复规则。状态向两环境分发，单独测试资源故障只闭锁测试；账户预算触发则两套共同保护。监控延迟及其他费用意味着这不是账单硬上限。见 [费用与容量](docs/costs.md)。
-
-正式公开或移除 Access 前，必须提醒清空内测数据库并核对测试媒体及配额范围；实际删除另行取得明确授权。
-
-
-## License
-
-This project is licensed under the GNU Affero General Public License v3.0 only (`AGPL-3.0-only`). See [LICENSE](LICENSE) for the full text.
+本项目采用 [AGPL-3.0-only](LICENSE)。

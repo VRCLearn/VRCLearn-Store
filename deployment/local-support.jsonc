@@ -1,19 +1,76 @@
 {
-    "$schema": "../node_modules/wrangler/config-schema.json",
-    "name": "local-vrclearn-store-support",
-    "main": "../worker/index.ts",
-    "compatibility_date": "2026-10-26",
-    "compatibility_flags": ["nodejs_compat"],
+    "compatibility_date": "2026-10-23",
+    "compatibility_flags": [
+        "nodejs_compat"
+    ],
     "workers_dev": false,
     "preview_urls": false,
-    "limits": { "cpu_ms": 500 },
-    "secrets": { "required": ["BETTER_AUTH_SECRET", "TURNSTILE_SECRET_KEY"] },
-    "vars": { "ORIGIN": "http://127.0.0.1:8788", "MEDIA_ORIGIN": "http://127.0.0.1:8788", "ENVIRONMENT": "development", "DEPLOYMENT_ENV": "local", "RELEASE_SHA": "local", "EMAIL_FROM": "local-noreply@example.com" },
-    "d1_databases": [{ "binding": "DB", "database_name": "local-vrclearn-store", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "../migrations" }],
-    "kv_namespaces": [{ "binding": "STATE", "id": "00000000000000000000000000000000" }],
-    "r2_buckets": [{ "binding": "PRIVATE_MEDIA", "bucket_name": "local-vrclearn-store-private" }, { "binding": "PUBLIC_MEDIA", "bucket_name": "local-vrclearn-store-public" }],
-    "send_email": [{ "name": "EMAIL", "allowed_sender_addresses": ["local-noreply@example.com"] }],
-    "durable_objects": { "bindings": [{ "name": "QUOTA", "class_name": "QuotaGate" }] },
-    "migrations": [{ "tag": "v1", "new_sqlite_classes": ["QuotaGate"] }],
-    "ratelimits": [{ "name": "AUTH_RATE_LIMIT", "namespace_id": "1000", "simple": { "limit": 20, "period": 60 } }]
+    "d1_databases": [
+        {
+            "binding": "DB",
+            "database_name": "local-vrclearn-store",
+            "database_id": "00000000-0000-0000-0000-000000000000",
+            "migrations_dir": "../migrations"
+        }
+    ],
+    "r2_buckets": [
+        {
+            "binding": "PRIVATE_MEDIA",
+            "bucket_name": "local-vrclearn-store-private"
+        },
+        {
+            "binding": "PUBLIC_MEDIA",
+            "bucket_name": "local-vrclearn-store-public"
+        }
+    ],
+    "kv_namespaces": [
+        {
+            "binding": "STATE",
+            "id": "00000000000000000000000000000000"
+        }
+    ],
+    "vars": {
+        "ORIGIN": "http://127.0.0.1:4173",
+        "MEDIA_ORIGIN": "http://127.0.0.1:4173",
+        "ENVIRONMENT": "development",
+        "DEPLOYMENT_ENV": "local",
+        "RELEASE_SHA": "local"
+    },
+    "name": "local-vrclearn-store-support",
+    "main": "../worker/index.ts",
+    "limits": {
+        "cpu_ms": 500
+    },
+    "secrets": {
+        "required": [
+            "BETTER_AUTH_SECRET",
+            "TURNSTILE_SECRET_KEY"
+        ]
+    },
+    "durable_objects": {
+        "bindings": [
+            {
+                "name": "QUOTA",
+                "class_name": "QuotaGate"
+            }
+        ]
+    },
+    "migrations": [
+        {
+            "tag": "v1",
+            "new_sqlite_classes": [
+                "QuotaGate"
+            ]
+        }
+    ],
+    "ratelimits": [
+        {
+            "name": "AUTH_RATE_LIMIT",
+            "namespace_id": "1000",
+            "simple": {
+                "limit": 20,
+                "period": 60
+            }
+        }
+    ]
 }
