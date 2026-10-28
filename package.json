@@ -2,6 +2,7 @@
     "name": "vrclearn-store",
     "version": "0.1.0",
     "private": true,
+    "license": "AGPL-3.0-only",
     "type": "module",
     "scripts": {
         "generate:theme": "node scripts/generate-theme.mjs",
