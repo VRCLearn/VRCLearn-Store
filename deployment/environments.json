@@ -13,7 +13,7 @@
         "support": {
             "name": "vrclearn-store-support",
             "doNamespaceId": "5eb0c01b75304890afc2a33737a4f82b",
-            "rateLimitNamespaceId": "1001"
+            "rateLimitNamespaceId": "2026102801"
         },
         "database": {
             "name": "vrclearn-store",
@@ -51,7 +51,7 @@
         "support": {
             "name": "test-vrclearn-store-support",
             "doNamespaceId": "8f3bd0c991994f8ba5c3a8c14746c285",
-            "rateLimitNamespaceId": "1002"
+            "rateLimitNamespaceId": "2026102802"
         },
         "database": {
             "name": "test-vrclearn-store",

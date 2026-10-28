@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 // @ts-ignore Native Node scripts are tested directly.
-import { createReleaseIO } from "../scripts/release-cloudflare.mjs";
+import { createCloudflareClient, createReleaseIO } from "../scripts/release-cloudflare.mjs";
 // @ts-ignore Native Node scripts are tested directly.
 import { ReleaseFailure } from "../scripts/release-core.mjs";
 
@@ -86,12 +86,20 @@ describe("bounded smoke GET retries", () => {
         expect(test.fetch.mock.calls.filter(([, options]) => options.headers)).toHaveLength(3);
         expect(test.sleep).toHaveBeenCalledTimes(2);
     });
-    it("bounds retrying only the smoke deployment-metadata GET", async () => {
+    it("does not add another retry layer around the metadata client", async () => {
         const test = fixture(async () => redirect());
         test.api.mockRejectedValue(new ReleaseFailure("CLOUDFLARE_READ_FAILED", "api"));
         await expect(test.run()).rejects.toThrow(/^SMOKE_DEPLOYMENT_TRANSPORT_FAILED$/);
-        expect(test.api).toHaveBeenCalledTimes(3); expect(test.fetch).not.toHaveBeenCalled();
-        expect(test.sleep).toHaveBeenCalledTimes(2);
+        expect(test.api).toHaveBeenCalledOnce(); expect(test.fetch).not.toHaveBeenCalled();
+        expect(test.sleep).not.toHaveBeenCalled();
+    });
+    it("performs at most three metadata HTTP attempts across the unified client and smoke", async () => {
+        const transport = vi.fn(async () => { throw new TypeError("private metadata connection reset"); });
+        const sleep = vi.fn(async (_milliseconds: number) => {});
+        const api = createCloudflareClient("test-only-token-never-real", transport, () => 10000, sleep);
+        const io = createReleaseIO(target, {}, { api, sleep });
+        await expect(io.smoke({ sha, pagesDeploymentId: "deployment" })).rejects.toThrow(/^SMOKE_DEPLOYMENT_TRANSPORT_FAILED$/);
+        expect(transport).toHaveBeenCalledTimes(3); expect(sleep).toHaveBeenCalledTimes(2);
     });
     it("does not retry a metadata GET returning 429", async () => {
         const test = fixture(async () => redirect());

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { generateDeployment, repositoryRoot } from "./environment.mjs";
 import { releaseLimits, ReleaseFailure } from "./release-core.mjs";
+import { migrationStatements } from "./migration-policy.mjs";
 
 function child(command, args, { timeout = 180000, env = process.env } = {}) {
     const result = spawnSync(command, args, { cwd: repositoryRoot, env, encoding: "utf8", timeout, maxBuffer: 4 * 1024 * 1024, windowsHide: true });
@@ -20,24 +21,54 @@ export function gitIdentity(variables = process.env) {
     };
 }
 
-export function createCloudflareClient(token, transport = fetch, remainingMs = () => releaseLimits.requestMs) {
+function isSelectRequest(path, body) {
+    if (!/^\/accounts\/[^/]+\/d1\/database\/[^/]+\/(query|raw)$/.test(path) || !body || body instanceof FormData) return false;
+    const queries = Array.isArray(body.batch) ? body.batch : [body];
+    if (!queries.length) return false;
+    try {
+        return queries.every(({ sql }) => migrationStatements(sql).every(({ tokens }) => tokens[0]?.value === "SELECT"
+            && !tokens.some((token) => token.kind === "word" && ["INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "ALTER", "DROP", "PRAGMA", "ATTACH", "DETACH", "VACUUM"].includes(token.value))));
+    } catch { return false; }
+}
+
+export function createCloudflareClient(token, transport = fetch, remainingMs = () => releaseLimits.requestMs, sleep = (milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, milliseconds))) {
     if (typeof token !== "string" || token.length < 20) throw new Error("RELEASE_TOKEN_MISSING");
     return async function cloudflare(path, { method = "GET", body, write = method !== "GET" } = {}) {
         if (!path.startsWith("/accounts/") || path.includes("..") || path.includes("?token=")) throw new Error("RELEASE_API_PATH_REJECTED");
         const headers = { Authorization: `Bearer ${token}` };
         if (body && !(body instanceof FormData)) headers["Content-Type"] = "application/json";
-        let response;
-        try {
-            response = await transport(`https://api.cloudflare.com/client/v4${path}`, {
-                method, headers, body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
-                redirect: "error", signal: AbortSignal.timeout(Math.max(1, Math.min(releaseLimits.requestMs, remainingMs()))),
-            });
-        } catch { throw new ReleaseFailure(write ? "CLOUDFLARE_WRITE_UNCONFIRMED" : "CLOUDFLARE_READ_FAILED", "api", write); }
-        let payload;
-        try { payload = await response.json(); }
-        catch { throw new ReleaseFailure(write ? "CLOUDFLARE_WRITE_UNCONFIRMED" : "CLOUDFLARE_RESPONSE_INVALID", "api", write); }
-        if (!response.ok || payload.success !== true || payload.errors?.length) throw new ReleaseFailure(`CLOUDFLARE_HTTP_${response.status}`, "api", write);
-        return payload.result;
+        const attempts = !write && (method === "GET" || method === "POST" && isSelectRequest(path, body)) ? 3 : 1;
+        const budget = (maximum) => {
+            const left = remainingMs();
+            if (left <= 0) throw new ReleaseFailure("RELEASE_DEADLINE", "api", write);
+            return Math.min(maximum, left);
+        };
+        for (let attempt = 0; attempt < attempts; attempt++) {
+            const signal = AbortSignal.timeout(budget(releaseLimits.requestMs));
+            let response, failure, raw;
+            try {
+                response = await transport(`https://api.cloudflare.com/client/v4${path}`, {
+                    method, headers, body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+                    redirect: "error", signal,
+                });
+            } catch { failure = write ? "CLOUDFLARE_WRITE_UNCONFIRMED" : "CLOUDFLARE_READ_FAILED"; }
+            if (!failure && response.status >= 500 && response.status <= 599) failure = `CLOUDFLARE_HTTP_${response.status}`;
+            if (!failure && !response.ok) throw new ReleaseFailure(`CLOUDFLARE_HTTP_${response.status}`, "api", write);
+            if (!failure) {
+                try { raw = await response.text(); }
+                catch { failure = write ? "CLOUDFLARE_WRITE_UNCONFIRMED" : "CLOUDFLARE_READ_FAILED"; }
+            }
+            if (!failure) {
+                let payload;
+                try { payload = JSON.parse(raw); }
+                catch { throw new ReleaseFailure(write ? "CLOUDFLARE_WRITE_UNCONFIRMED" : "CLOUDFLARE_RESPONSE_INVALID", "api", write); }
+                if (!payload || payload.success !== true || payload.errors?.length) throw new ReleaseFailure(`CLOUDFLARE_HTTP_${response.status}`, "api", write);
+                return payload.result;
+            }
+            try { await response?.body?.cancel(); } catch { /* Never expose raw transport or response diagnostics. */ }
+            if (attempt + 1 === attempts) throw new ReleaseFailure(failure, "api", write);
+            await sleep(budget([250, 750][attempt]));
+        }
     };
 }
 
@@ -113,26 +144,21 @@ export function createReleaseIO(profile, variables = process.env, overrides = {}
         if (time <= 0) throw new ReleaseFailure("RELEASE_DEADLINE", "adapter", true);
         return time;
     };
-    const api = overrides.api ?? createCloudflareClient(variables.CLOUDFLARE_API_TOKEN, overrides.fetch ?? fetch, remaining);
     const transport = overrides.fetch ?? fetch;
     const sleep = overrides.sleep ?? ((milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, remaining(milliseconds))));
+    const api = overrides.api ?? createCloudflareClient(variables.CLOUDFLARE_API_TOKEN, transport, remaining, sleep);
     const accountBase = `/accounts/${profile.accountId}`;
     const pagesBase = `${accountBase}/pages/projects/${profile.pagesProject}`;
     const supportBase = `${accountBase}/workers/scripts/${profile.supportWorker}`;
     const readSmokeDeployment = async (id) => {
-        for (let attempt = 0; attempt < 3; attempt++) {
-            remaining();
-            try { return await api(`${pagesBase}/deployments/${encodeURIComponent(id)}`); }
-            catch (error) {
-                if (!(error instanceof ReleaseFailure)) throw error;
-                const status = /^CLOUDFLARE_HTTP_(\d{3})$/.exec(error.code)?.[1];
-                const transportFailure = error.code === "CLOUDFLARE_READ_FAILED";
-                if (error.code === "CLOUDFLARE_RESPONSE_INVALID") throw new Error("SMOKE_DEPLOYMENT_RESPONSE_INVALID");
-                if (!transportFailure && status === undefined) throw error;
-                const code = transportFailure ? "SMOKE_DEPLOYMENT_TRANSPORT_FAILED" : "SMOKE_DEPLOYMENT_HTTP_FAILED";
-                if ((!transportFailure && (Number(status) < 500 || Number(status) > 599)) || attempt === 2) throw new Error(code);
-                await sleep(remaining([250, 750][attempt]));
-            }
+        remaining();
+        try { return await api(`${pagesBase}/deployments/${encodeURIComponent(id)}`); }
+        catch (error) {
+            if (!(error instanceof ReleaseFailure)) throw error;
+            if (error.code === "CLOUDFLARE_RESPONSE_INVALID") throw new Error("SMOKE_DEPLOYMENT_RESPONSE_INVALID");
+            if (error.code === "CLOUDFLARE_READ_FAILED") throw new Error("SMOKE_DEPLOYMENT_TRANSPORT_FAILED");
+            if (/^CLOUDFLARE_HTTP_\d{3}$/.test(error.code)) throw new Error("SMOKE_DEPLOYMENT_HTTP_FAILED");
+            throw error;
         }
     };
     const d1 = async (id, queries, write = false) => {

@@ -18,6 +18,8 @@
 
 D1、两个 R2 桶、KV、辅助 Worker、配额 Durable Object 命名空间、认证限流命名空间、认证 Secret、Turnstile 和 Access 应用分别独立。测试不复制生产账户、会话、媒体或认证秘密。Cookie 按主机限定；测试邮件使用独立发件地址及明确测试标识，可发送给所有注册邮箱，仍受验证、限流和配额约束。两套的 `ENVIRONMENT` 均为 `production`，安全逻辑一致；`DEPLOYMENT_ENV=production|test` 仅用于确认部署身份。
 
+认证限流的 `namespace_id` 在同一 Cloudflare 账户内跨 Worker 共享计数，须为每套环境分配不与其他应用复用的编号，不能直接沿用文档示例值。实际编号集中保存在环境清单；新增或修改限流绑定前，先有界盘点账户内已有 Worker 的限流绑定。
+
 账户总费用保护由独立 `vrclearn-store-account-monitor` Worker 负责，控制状态、告警配额与发布锁独立于业务资源。它不随 `test` 分支的常规发布更新。业务隔离针对可信开发中的缺陷、误操作和误配置；仓库检查不能防御拥有构建凭据的恶意代码。
 
 ## 工具与本地开发
@@ -72,6 +74,8 @@ node scripts/release.mjs --environment production
 7. 探测站点、API、媒体、Pages 默认域和本次 hash 入口的 Access 拦截，再用专用服务身份核对配置 API 的环境和 SHA，最后释放发布锁。
 
 整个发布最多 12 分钟；锁等待、HTTP、子进程和 Pages 轮询分别有限额。旧提交在后续阶段变为过时就停止；SHA 或 Worker／Pages 版本不一致不会标记发布成功。已产生远端变更的失败保留闭锁，不能依靠新推送覆盖未查明的结果。原生 Git 构建与新提交可能交错，因此以构建期检查、持锁串行和最终读回共同验收，不能将启动部署写成成功。
+
+Cloudflare 只读 GET、明确标记且仅包含 SELECT 的 D1 查询，以及 HTTP 冒烟探测，对传输故障或 5xx 最多重试两次，退避为 250／750 ms，仍受同一总期限约束。429、其他 4xx 和内容／版本校验错误不自动重试；所有写入保持单次执行，结果不明时先读回。
 
 ## Workers Builds API 对接
 
