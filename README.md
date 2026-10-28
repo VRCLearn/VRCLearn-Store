@@ -45,7 +45,7 @@ npm.cmd run test:browser
 
 ## 配置与内部测试
 
-项目保持生产候选、测试两套独立业务环境：`main` 对应 [store.vrclearn.com](https://store.vrclearn.com)，`test` 对应 [test-store.vrclearn.com](https://test-store.vrclearn.com)。测试资源统一以 `test-` 开头，D1、R2、KV、DO、认证、限流、Turnstile 和 Access 分别独立，不复制生产账户或媒体。两套继续保持内部 Access 保护，用户范围为 `@vrclearn.com`；Access 准入不授予商店管理权限。
+项目保持生产候选、测试两套独立业务环境：`main` 对应 [store.vrclearn.com](https://store.vrclearn.com)，`test` 对应 [test-store.vrclearn.com](https://test-store.vrclearn.com)。测试资源统一以 `test-` 开头，D1、R2、KV、DO、认证密钥、限流、Turnstile 和 Access 分别独立。内测可经明确授权复制账户、密码哈希、业务记录及媒体到测试资源，排除全部会话和一次性验证记录；不会持续同步数据。两套继续保持内部 Access 保护，用户范围为 `@vrclearn.com`；Access 准入不授予商店管理权限。
 
 两分支共用业务代码与 `deployment/environments.json` 环境清单。`test` 验证后直接 PR 合入 `main`，不改环境配置、不复制数据，生产重新校验和构建。Cloudflare Workers Builds 协调迁移、辅助 Worker 和 Pages 原生 Git 发布；Pages 独立推送／预览触发关闭，不使用 GitHub Actions 或 Pages Direct Upload。
 
