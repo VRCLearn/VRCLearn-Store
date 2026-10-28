@@ -13,6 +13,7 @@ for (const [name, config] of [["Pages", pages], ["Support", support]]) {
 if (pages.d1_databases[0].database_id !== support.d1_databases[0].database_id) errors.push("Pages and Support must use the same D1 database");
 if (pages.kv_namespaces[0].id !== support.kv_namespaces[0].id) errors.push("Pages and Support must use the same STATE namespace");
 if (!pages.vars.TURNSTILE_SITE_KEY) errors.push("Configure the production Turnstile site key");
+if (pages.vars.SKIP_DEPENDENCY_INSTALL !== "1") errors.push("Keep SKIP_DEPENDENCY_INSTALL=1 in the Pages source configuration so Git builds use npm ci once");
 if (pages.vars.ORIGIN !== support.vars.ORIGIN) errors.push("Runtime origins differ");
 if (pages.vars.MEDIA_ORIGIN !== support.vars.MEDIA_ORIGIN) errors.push("Runtime media origins differ");
 if (support.workers_dev !== false || support.preview_urls !== false || support.routes?.length) errors.push("Support Worker must remain service-binding-only");

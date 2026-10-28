@@ -4,7 +4,7 @@
 
 账户查询和经授权的资源管理优先使用 `cf` CLI：D1、R2、KV、Pages 项目与域名、Turnstile、Access 和边缘规则均通过其对应资源命令处理。用 `cf cli search` 查找命令、`cf schema` 检查精确请求，搜索文字不包含账户、域名或资源标识。写入前核对已有资源，结果不明确时先读回，不直接重试创建。
 
-Pages 使用 Cloudflare 原生 Git 集成连接 `VRCLearn/VRCLearn-Store`，生产分支为 `main`，由 Cloudflare 拉取已推送的明确提交构建和部署，Pages 部署不依赖 GitHub Actions。生产构建命令为 `npm ci && npm test && npm run build && npm run preflight`，输出目录为 `dist`，根目录为仓库根目录，构建镜像为 v3。仓库 `.node-version` 固定 Node.js 版本；Pages 构建环境设置 `SKIP_DEPENDENCY_INSTALL=1`，由命令中的 `npm ci` 按锁文件安装依赖。关闭非生产分支自动预览部署，避免生产绑定进入其他分支及消耗构建配额。浏览器回归在推送前本地运行，Cloudflare 构建不依赖本机 Chrome。
+Pages 使用 Cloudflare 原生 Git 集成连接 `VRCLearn/VRCLearn-Store`，生产分支为 `main`，由 Cloudflare 拉取已推送的明确提交构建和部署，Pages 部署不依赖 GitHub Actions。生产构建命令为 `npm ci && npm test && npm run build && npm run preflight`，输出目录为 `dist`，根目录为仓库根目录，构建镜像为 v3。仓库 `.node-version` 固定 Node.js 版本；`wrangler.jsonc` 的 vars 声明 `SKIP_DEPENDENCY_INSTALL=1` 并同步到 Pages 构建环境，避免 Git 部署覆盖仪表盘设置后恢复自动安装；依赖由命令中的 `npm ci` 按锁文件安装一次。关闭非生产分支自动预览部署，避免生产绑定进入其他分支及消耗构建配额。浏览器回归在推送前本地运行，Cloudflare 构建不依赖本机 Chrome。
 
 `wrangler.jsonc` 是 Pages Functions 配置的唯一来源，Git 构建沿用其中的 D1、R2、KV、Service Binding、Durable Object、CPU 和兼容日期；Secret 通过 Cloudflare 加密环境变量配置。生产与预览均保持 `fail_open=false`，不能将预检通过当作远端绑定或 Access 已生效的证据。每次发布核对 Cloudflare 生产部署的提交 SHA 与 GitHub `main` 一致，并检查构建日志、部署状态、自定义域及默认入口的实际响应。
 

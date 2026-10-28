@@ -14,6 +14,7 @@
     "services": [{ "binding": "AUTH", "service": "vrclearn-store-support" }],
     "durable_objects": { "bindings": [{ "name": "QUOTA", "class_name": "QuotaGate", "script_name": "vrclearn-store-support" }] },
     "vars": {
+        "SKIP_DEPENDENCY_INSTALL": "1",
         "ORIGIN": "https://store.vrclearn.com",
         "MEDIA_ORIGIN": "https://store-media.vrclearn.com",
         "ENVIRONMENT": "production",
