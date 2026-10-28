@@ -45,6 +45,6 @@ npm.cmd run test:browser
 
 `npm.cmd run preflight` 检查资源引用和入口约束，当前配置已通过。`deployment/edge-policies.json` 记录已应用的媒体分区、缓存与预置紧急规则；两条紧急封锁规则正常时保持禁用。预检不能代替远端验收，也不授权部署。
 
-Pages 从 Cloudflare 原生连接本仓库，生产分支为 `main`；使用 `.node-version`、锁文件和 `npm ci && npm test && npm run build && npm run preflight` 构建到 `dist`，不配置 GitHub Actions，不从含未提交改动的本地工作区部署。分支预览自动部署关闭。资源管理优先使用 `cf`；辅助 Worker 的独立发布与 Secret 注入见 [运维说明](docs/operations.md)。本地 CLI 缓存、凭据和验收产物不纳入版本控制。
+Pages 从 Cloudflare 原生连接本仓库，生产分支为 `main`；使用 `.node-version`、锁文件和 `npm ci && npm test && npm run build && npm run preflight` 构建到 `dist`，Pages 部署不依赖 GitHub Actions，不从含未提交改动的本地工作区部署。分支预览自动部署关闭。资源管理优先使用 `cf`；辅助 Worker 的独立发布与 Secret 注入见 [运维说明](docs/operations.md)。本地 CLI 缓存、凭据和验收产物不纳入版本控制。
 
 自动费用监控已通过真实 Cron 验证 V1 账户账单来源，并在人工确认后恢复正常。验收采样估算的 5 美元为 Workers Paid 基础费预留，已返回计费行的累计按量费用为零；费用接口按日更新，保护机制不构成账单硬上限。完整验收范围与未验证项见 [费用与容量](docs/costs.md)、[运维说明](docs/operations.md) 和 [辅助 Worker](worker/README.md)。

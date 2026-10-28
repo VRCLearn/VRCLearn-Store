@@ -71,4 +71,4 @@ KV `budget:state` 保存当前状态，以下为费用源失败时的结构示�
 
 认证、监控凭据及 `ALERT_EMAIL` 运维收件人由 secret 注入，不写入公开配置和日志；发信通过原生 EMAIL 绑定。普通账户邮件有独立的全站 100 封／日、2500 封／日历月及收件人 1 封／分钟、5 封／日配额；运维告警另保留 6 封／日、40 封／月，重复告警不会无限发送。`EMAIL.send()` 使用当前原生 `EmailMessageBuilder`，绑定限制发件人为 `noreply@vrclearn.com`。域名启用和类型检查不能证明实际投递，内部测试只向已确认的所有者测试邮箱发送必要邮件。
 
-部署使用 `cf` 管理资源、迁移、绑定及查询。Pages 由 Cloudflare 原生 Git 集成从 GitHub `main` 构建发布，不配置 GitHub Actions；辅助 Worker 有变更时，从已推送提交的干净检出单独发布，当前仅其代码上传使用官方 Wrangler。先部署变化的辅助 Worker，再发布依赖它的 Pages，不改变 Pages 静态优先架构。内部入口保护、上传命令和真实环境验收见 [运维说明](../docs/operations.md)。本文描述运行合同，不代替远端部署和验收记录。
+部署使用 `cf` 管理资源、迁移、绑定及查询。Pages 由 Cloudflare 原生 Git 集成从 GitHub `main` 构建发布，Pages 部署不依赖 GitHub Actions；辅助 Worker 有变更时，从已推送提交的干净检出单独发布，当前仅其代码上传使用官方 Wrangler。先部署变化的辅助 Worker，再发布依赖它的 Pages，不改变 Pages 静态优先架构。内部入口保护、上传命令和真实环境验收见 [运维说明](../docs/operations.md)。本文描述运行合同，不代替远端部署和验收记录。

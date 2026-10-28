@@ -4,7 +4,7 @@
 
 账户查询和经授权的资源管理优先使用 `cf` CLI：D1、R2、KV、Pages 项目与域名、Turnstile、Access 和边缘规则均通过其对应资源命令处理。用 `cf cli search` 查找命令、`cf schema` 检查精确请求，搜索文字不包含账户、域名或资源标识。写入前核对已有资源，结果不明确时先读回，不直接重试创建。
 
-Pages 使用 Cloudflare 原生 Git 集成连接 `VRCLearn/VRCLearn-Store`，生产分支为 `main`，由 Cloudflare 拉取已推送的明确提交构建和部署，不配置 GitHub Actions。生产构建命令为 `npm ci && npm test && npm run build && npm run preflight`，输出目录为 `dist`，根目录为仓库根目录，构建镜像为 v3。仓库 `.node-version` 固定 Node.js 版本；Pages 构建环境设置 `SKIP_DEPENDENCY_INSTALL=1`，由命令中的 `npm ci` 按锁文件安装依赖。关闭非生产分支自动预览部署，避免生产绑定进入其他分支及消耗构建配额。浏览器回归在推送前本地运行，Cloudflare 构建不依赖本机 Chrome。
+Pages 使用 Cloudflare 原生 Git 集成连接 `VRCLearn/VRCLearn-Store`，生产分支为 `main`，由 Cloudflare 拉取已推送的明确提交构建和部署，Pages 部署不依赖 GitHub Actions。生产构建命令为 `npm ci && npm test && npm run build && npm run preflight`，输出目录为 `dist`，根目录为仓库根目录，构建镜像为 v3。仓库 `.node-version` 固定 Node.js 版本；Pages 构建环境设置 `SKIP_DEPENDENCY_INSTALL=1`，由命令中的 `npm ci` 按锁文件安装依赖。关闭非生产分支自动预览部署，避免生产绑定进入其他分支及消耗构建配额。浏览器回归在推送前本地运行，Cloudflare 构建不依赖本机 Chrome。
 
 `wrangler.jsonc` 是 Pages Functions 配置的唯一来源，Git 构建沿用其中的 D1、R2、KV、Service Binding、Durable Object、CPU 和兼容日期；Secret 通过 Cloudflare 加密环境变量配置。生产与预览均保持 `fail_open=false`，不能将预检通过当作远端绑定或 Access 已生效的证据。每次发布核对 Cloudflare 生产部署的提交 SHA 与 GitHub `main` 一致，并检查构建日志、部署状态、自定义域及默认入口的实际响应。
 
@@ -91,10 +91,10 @@ Pages 的“Enable access policy”默认只保护预览，不覆盖根 `vrclear
 | 项目 | 实际结果 |
 | --- | --- |
 | 辅助 Worker | `148212b3-faac-48db-b678-d6c35069aeea` 已部署，启动 38 ms，配置每 15 分钟触发器；仅 Service Binding，无公开路由 |
-| Pages | 正式入口为 `store.vrclearn.com`，包括 MFA 二维码、三语设置指引与恢复码下载；Pages 发布采用 GitHub `main` 的明确提交，版本须在 Cloudflare 核对关联 SHA、构建和部署成功状态。production、preview 均要求 `fail_open=false`，正式域、根默认域和 hash 默认域须逐项验证 Access |
-| 数据与绑定 | 三个 D1 迁移、所需 schema 和外键检查通过；实际资源 ID、共享绑定及五个 Worker secrets 已配置 |
+| Pages | 已在 2026-10-28 重建为同名 Git 集成项目，ID 为 `49f24811-18b6-4778-a6c3-bb73278bb7da`，连接 `VRCLearn/VRCLearn-Store` 的 `main`。首次原生构建 `a792bd9f-542f-4ac2-8ef2-d856f53002d8` 从提交 `1eb6727` 克隆，Cloudflare 执行锁文件安装、288 项测试、构建及预检后部署成功，GitHub 的 Cloudflare Pages 检查通过；后续当前版本以 canonical deployment 关联 SHA 为准 |
+| 数据与绑定 | Pages 重建前后 D1 仍有 3 个账户、2 个店铺、1 个商品、3 个修订、2 条有效地区发布、1 条私有媒体及 2 条公开媒体记录；两个 R2 桶、KV、认证 Worker 与配额 Durable Object 均沿用原资源，未重置数据库、媒体或管理员。五个 Worker Secret 保留，Pages Turnstile Secret 已通过当前用户专用内存管道恢复 |
 | 媒体 | 两桶 `r2.dev` 已关闭；正式媒体自定义域最低 TLS 1.2、SSL 状态 active；地区 WAF 仅排除 Access 精确授权回调。最终国际区图片实际返回 200，非磁盘缓存、CDN `HIT`，响应为 `image/jpeg`、53,991 字节、`max-age=60, s-maxage=60`，实际解码为 1910×851；同一国际出口请求对应 CN 图片实际返回 403，非磁盘缓存，匿名国际区请求仍转入 Access。用户已明确延期真实中国网络测试，此项不阻断本次受保护内测交付 |
-| Access 准入与匿名入口 | 新邮箱 OTP 已完成真实收码与登录验证，现同时提供 OTP 与 Cloudflare 登录；商店允许策略仅为 `@vrclearn.com` 邮箱域。四个入口及 24 小时会话保持，最近一次 Pages 发布后的正式静态页、API、根默认域、hash 默认域和媒体五项匿名探测均为 Access 302；Pages 重建后须重新执行相同核验 |
+| Access 准入与匿名入口 | 新邮箱 OTP 与 Cloudflare 登录并存，仅允许 `@vrclearn.com` 邮箱域，四个保护目标、策略、登录来源、24 小时会话和 Cookie 配置与重建前一致。首次原生构建后，正式静态页、API、根默认域、hash 默认域、main 分支域及媒体六项匿名探测均为 Access 302；原已获准浏览器会话正常读取搜索结果，站点自定义域验证和证书状态 active |
 | 浏览器与公开读取 | 所有者实际通过 Access 打开首页；最终分区验收修订的简中、英文、日文详情原始 HTML 均返回 200、`private, no-store`，包含最新正文与 Product 结构化数据，三语响应均仅引用国际区图片。搜索和收藏实际返回 200 及当前新内容，三语 sitemap 均为 200 且包含该商品。这些实测来自国际出口 |
 | 店铺详情 SEO | 已获批店铺的简中、英文、日文原始 HTML 均实际返回 200，包含店铺正文、标题、对应语言 canonical、Open Graph 和 Organization 结构化数据；三语响应均为 `private, no-store` 并带 nonce CSP，源码不含草稿商品 |
 | 账户与邮件 | 所有者已完成真实 Turnstile 注册、验证邮件与密码登录；D1 确认邮箱、TOTP 均已验证且当前会话有有效 MFA 证明，账户页显示双重身份验证已启用。当前 500 ms CPU 配置下流程可用，尚未取得逐请求 CPU 测量值 |
