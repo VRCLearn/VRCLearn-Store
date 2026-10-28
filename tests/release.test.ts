@@ -18,7 +18,7 @@ function fixture() {
     const io = {
         now: () => time, sleep: async (ms: number) => { time += ms; }, log: vi.fn(), headSha: vi.fn(async () => sha),
         acquireLease: vi.fn(async () => true), assertLease: vi.fn(async () => true), mark: vi.fn(async (_id: string, { stage }: { stage: string }) => { calls.push(stage); }),
-        completeLease: vi.fn(async () => {}), failLease: vi.fn(async () => {}), verifyRemoteConfiguration: vi.fn(async () => {}),
+        completeLease: vi.fn(async () => {}), failLease: vi.fn(async () => {}), verifyResourceIdentities: vi.fn(async () => {}), verifyRemoteConfiguration: vi.fn(async () => {}),
         runChecks: vi.fn(async () => {}), localMigrations: async () => files, appliedMigrations: async () => files.map((file) => file.name), migrationChecksums: async () => ({}),
         applyMigration: vi.fn(async () => {}), recordMigration: vi.fn(async () => {}), deploySupport: vi.fn(async () => ({ versionId: "worker-version", sha })),
         setPagesRelease: vi.fn(async () => {}), startPages: vi.fn(async () => ({ id: "pages-deployment" })),
@@ -32,10 +32,11 @@ describe("coordinated automatic release", () => {
     it("publishes Worker before native Git Pages and verifies before releasing its lock", async () => {
         const { io, calls } = fixture();
         expect(await runRelease(profile, identity, io, limits)).toMatchObject({ sha, pagesDeploymentId: "pages-deployment" });
-        expect(calls).toEqual(["checks", "migrations", "worker", "pages", "pages_wait", "verify"]);
+        expect(calls).toEqual(["checks", "migrations", "worker", "pages", "pages_wait", "verify", "smoke"]);
         expect(io.startPages).toHaveBeenCalledExactlyOnceWith("test", sha);
         expect(io.completeLease).toHaveBeenCalledOnce();
         expect(io.failLease).not.toHaveBeenCalled();
+        expect(io.verifyResourceIdentities.mock.invocationCallOrder[0]).toBeLessThan(io.acquireLease.mock.invocationCallOrder[0]);
     });
     it.each([
         { branch: "main" }, { platformSha: otherSha }, { dirty: true }, { projectName: "vrclearn-store" }, { sha: "short" },
@@ -63,6 +64,26 @@ describe("coordinated automatic release", () => {
         expect(io.failLease).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ uncertain: true, stage: "worker" }));
         expect(io.deploySupport).toHaveBeenCalledOnce(); expect(io.startPages).not.toHaveBeenCalled();
         expect(JSON.stringify(io.log.mock.calls)).not.toContain("private response");
+    });
+    it("preserves an exact allowlisted verification code and its verify stage", async () => {
+        const { io } = fixture(); io.verifyPublished.mockRejectedValue(new Error("PAGES_BINDING_MISMATCH"));
+        await expect(runRelease(profile, identity, io, limits)).rejects.toThrow("PAGES_BINDING_MISMATCH");
+        expect(io.log).toHaveBeenCalledWith(expect.objectContaining({ event: "release_failed", stage: "verify", code: "PAGES_BINDING_MISMATCH" }));
+        expect(io.smoke).not.toHaveBeenCalled();
+    });
+    it.each(["SMOKE_SITE_ACCESS_FAILED", "SMOKE_CONFIG_TRANSPORT_FAILED"])("records %s in the distinct persisted smoke stage", async (code) => {
+        const { io, calls } = fixture(); io.smoke.mockRejectedValue(new Error(code));
+        await expect(runRelease(profile, identity, io, limits)).rejects.toThrow(code);
+        expect(calls).toEqual(["checks", "migrations", "worker", "pages", "pages_wait", "verify", "smoke"]);
+        expect(io.failLease).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ stage: "smoke", uncertain: true }));
+        expect(io.log).toHaveBeenCalledWith(expect.objectContaining({ event: "release_failed", stage: "smoke", code }));
+        expect(io.completeLease).not.toHaveBeenCalled();
+    });
+    it.each(["PAGES_BINDING_MISMATCH: private diagnostic", "PAGES_UNKNOWN_PRIVATE_VALUE", "password=never-log-this"])("does not expose unlisted or extended exception messages %s", async (message) => {
+        const { io } = fixture(); io.smoke.mockRejectedValue(new Error(message));
+        await expect(runRelease(profile, identity, io, limits)).rejects.toThrow("RELEASE_OPERATION_FAILED");
+        expect(JSON.stringify(io.log.mock.calls)).not.toContain(message);
+        expect(io.failLease).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ code: "RELEASE_OPERATION_FAILED", stage: "smoke" }));
     });
     it("does not mistake commit_hash metadata for a Git source pin", async () => {
         const { io } = fixture(); io.pagesDeployment.mockResolvedValue({ sha: otherSha, branch: "test", status: "success" });

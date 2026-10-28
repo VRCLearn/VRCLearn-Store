@@ -40,7 +40,7 @@ export function validateEnvironments(manifest, { requireProvisioned = true, allo
             pages: `${prefix}vrclearn-store`,
             support: `${prefix}vrclearn-store-support`,
             database: `${prefix}vrclearn-store`,
-            state: `${prefix}vrclearn-store-state`,
+            state: environment === "production" ? "VRCLearn Store State" : "test-vrclearn-store-state",
             privateBucket: `${prefix}vrclearn-store-private`,
             publicBucket: `${prefix}vrclearn-store-public`,
             emailFrom: `${environment === "test" ? "test-" : ""}noreply@vrclearn.com`,

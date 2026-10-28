@@ -14,7 +14,7 @@
 | D1 | `vrclearn-store` | `test-vrclearn-store` |
 | 私有 R2 | `vrclearn-store-private` | `test-vrclearn-store-private` |
 | 公开 R2 | `vrclearn-store-public` | `test-vrclearn-store-public` |
-| KV | 保留现有生产资源 | `test-vrclearn-store-state` |
+| KV | `VRCLearn Store State`（保留原名称） | `test-vrclearn-store-state` |
 
 D1、两个 R2 桶、KV、辅助 Worker、配额 Durable Object 命名空间、认证限流命名空间、认证 Secret、Turnstile 和 Access 应用分别独立。测试不复制生产账户、会话、媒体或认证秘密。Cookie 按主机限定；测试邮件使用独立发件地址及明确测试标识，可发送给所有注册邮箱，仍受验证、限流和配额约束。两套的 `ENVIRONMENT` 均为 `production`，安全逻辑一致；`DEPLOYMENT_ENV=production|test` 仅用于确认部署身份。
 
@@ -63,7 +63,7 @@ node scripts/release.mjs --environment production
 
 每个构建只执行对应的一行。发布器要求平台提供的 `WORKERS_CI_BRANCH`、`WORKERS_CI_COMMIT_SHA` 与干净检出的完整 SHA 一致，并核对项目固定身份、远端分支 HEAD 和两套资源清单。顺序固定为：
 
-1. 获取本环境发布锁，验证远端项目配置。
+1. 只读核对业务 D1、发布控制库和业务 KV 的实际 ID／名称，再获取本环境发布锁，验证远端项目配置。KV 名单最多读取五页、每页一百项，缺失、错配或超过扫描上限均停止，不读取 KV 值。
 2. 测试、构建、预检；再次确认提交未被替代。
 3. 校验迁移历史与校验和，仅应用允许的增量迁移。
 4. 部署辅助 Worker，读回唯一 100% 活跃版本、SHA 和业务绑定。
@@ -246,40 +246,14 @@ Cron 通过控制专用 `QUOTA.getByName("account-monitor").checkBudget()` 执�
 | 测试 D1 `7bb66e28-d981-4db2-8963-4e6820ba7a14` | 先查重确认唯一 probe 表不存在，再创建；同一 REST batch 内两次插入相同主键，实际返回 HTTP 400／7500 UNIQUE 错误，随后读回 `count(*)=0`。首条写入已回滚。最终删除该 probe 表，再查 `sqlite_master` 为空，无 probe 残留；未写生产库或控制库 |
 | 事务结论 | 此次实测支持当前 REST batch 的约束故障回滚行为；公开 REST 文档确认 batch 请求形状，明确事务保证见 Worker binding 文档，不能把一次观察提升为永久平台契约。发布器仍逐项校验响应、保留结果不明锁，并要求迁移异常人工读回；本地 SQLite 回滚测试只覆盖客户端逻辑 |
 | Pages 稀疏变量 PATCH | 本次受控元数据 PATCH 前后，选定项目的 10 个变量名全部保留，`TURNSTILE_SECRET_KEY` 仍为 `secret_text`，无需恢复；没有读取或输出秘密值。发布器仍在每次 PATCH 后检查 Secret 名称保留，不依赖这次采样永久放行 |
-| Pages 自动触发与手动 API | 测试 Pages 在 `production_deployments_enabled=false`、`preview_deployment_setting=none` 时，协调器已实际启动 Git 部署 `28eb4d5e-3301-4c29-a4ca-d06ad5532e9b`，克隆正确提交 `6b5944b43b69893cdd24c537b70638b0b8bab6b5`。该轮在 `prepare-pages` 因身份变量被旧根配置覆盖而失败，未产生 canonical deployment；这证明手动 Git 触发可用，不代表整轮发布成功。若返回 `is_skipped` 或 `status=skipped`，立即停止并保留闭锁，不重试或自动开启推送触发 |
+| Pages 自动触发与手动 API | 独立推送触发关闭时，发布器使用原生 Git API 启动目标分支构建；实际来源为分支 HEAD，构建前后均核对 RELEASE_SHA。仓库默认 Wrangler 配置会覆盖构建变量，因此只保留显式本地配置和构建时生成的配置。若返回 is_skipped 或 status=skipped，立即停止并保留闭锁，不自动开启推送或重试 |
 
 依据：[D1 REST 请求](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)、[Worker binding batch 事务](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)、[Pages 分支自动部署控制](https://developers.cloudflare.com/pages/configuration/branch-build-controls/)、[Pages 原生 Git 部署 API](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/)。
 
 
-## 既有单环境验收记录
+## 部署验收
 
-以下是双环境切换前的既有验收证据，表内服务端时间标注 UTC，不代表本文所述新资源、监控拆分或完整自动链路已远端验收。当前版本以远端 canonical deployment、Worker RELEASE_SHA、迁移和预算状态读回为准；双环境新增验收须另记录实际提交、部署 ID、时间及结果，不由本地测试推断。
-
-| 项目 | 实际结果 |
-| --- | --- |
-| 辅助 Worker | `148212b3-faac-48db-b678-d6c35069aeea` 已部署，启动 38 ms，配置每 15 分钟触发器；仅 Service Binding，无公开路由 |
-| Pages | 已在 2026-10-28 重建为同名 Git 集成项目，ID 为 `49f24811-18b6-4778-a6c3-bb73278bb7da`，连接 `VRCLearn/VRCLearn-Store` 的 `main`。首次原生构建 `a792bd9f-542f-4ac2-8ef2-d856f53002d8` 从提交 `1eb6727` 克隆，Cloudflare 执行锁文件安装、288 项测试、构建及预检后部署成功，GitHub 的 Cloudflare Pages 检查通过；后续当前版本以 canonical deployment 关联 SHA 为准 |
-| 数据与绑定 | Pages 重建前后 D1 仍有 3 个账户、2 个店铺、1 个商品、3 个修订、2 条有效地区发布、1 条私有媒体及 2 条公开媒体记录；两个 R2 桶、KV、认证 Worker 与配额 Durable Object 均沿用原资源，未重置数据库、媒体或管理员。当次部署保留了凭据，Pages Turnstile Secret 已通过当前用户专用内存管道恢复；当前秘密归属按上文双环境边界及监控移交步骤核对 |
-| 媒体 | 两桶 `r2.dev` 已关闭；正式媒体自定义域最低 TLS 1.2、SSL 状态 active；地区 WAF 仅排除 Access 精确授权回调。最终国际区图片实际返回 200，非磁盘缓存、CDN `HIT`，响应为 `image/jpeg`、53,991 字节、`max-age=60, s-maxage=60`，实际解码为 1910×851；同一国际出口请求对应 CN 图片实际返回 403，非磁盘缓存，匿名国际区请求仍转入 Access。用户已明确延期真实中国网络测试，此项不阻断本次受保护内测交付 |
-| Access 准入与匿名入口 | 新邮箱 OTP 与 Cloudflare 登录并存，仅允许 `@vrclearn.com` 邮箱域，四个保护目标、策略、登录来源、24 小时会话和 Cookie 配置与重建前一致。首次原生构建后，正式静态页、API、根默认域、hash 默认域、main 分支域及媒体六项匿名探测均为 Access 302；原已获准浏览器会话正常读取搜索结果，站点自定义域验证和证书状态 active |
-| 浏览器与公开读取 | 所有者实际通过 Access 打开首页；最终分区验收修订的简中、英文、日文详情原始 HTML 均返回 200、`private, no-store`，包含最新正文与 Product 结构化数据，三语响应均仅引用国际区图片。搜索和收藏实际返回 200 及当前新内容，三语 sitemap 均为 200 且包含该商品。这些实测来自国际出口 |
-| 店铺详情 SEO | 已获批店铺的简中、英文、日文原始 HTML 均实际返回 200，包含店铺正文、标题、对应语言 canonical、Open Graph 和 Organization 结构化数据；三语响应均为 `private, no-store` 并带 nonce CSP，源码不含草稿商品 |
-| 账户与邮件 | 所有者已完成真实 Turnstile 注册、验证邮件与密码登录；当前仓库认证变更部署后须重新验证密码登录、密码找回与会话撤销。当前 500 ms CPU 配置下密码流程可用，尚未取得逐请求 CPU 测量值 |
-| 管理员 | 经所有者批准已初始化内测管理员，后续指定的内测账户也已按授权授予角色。当前仓库变更部署后须重新验证有效会话、已验证邮箱、管理员角色和封禁状态的门禁 |
-| 费用状态 | 人工恢复后，线上 Cron 持续成功核验真实来源；17:15:47 UTC 自动采样为 `normal`、5 美元、`coverageBasis: "provider-account"`，未人工触发任务。17:24:36 UTC 读回确认 Pages 仍为 FD 部署、媒体地区 WAF 启用，两条紧急停机规则均禁用 |
-| 商家与发布 | 内测店铺资料和两区权限已分别审核；首份商品在正常界面完成两区审核并上架。同一商品的新修订也已真实提交：仅 CN 批准时，两区仍指向旧版且候选公开图片为零；国际区批准后，两区原子切换至修订 `4c5dcaaf-b17a-4a81-9667-c62c4dc954ab`，公开图片两份，旧版图片记录清零。真实搜索在切换前不返回修订关键词，切换后返回新内容。发布与换版均未触发 Pages 构建 |
-| 未审核内容隔离 | 首次发布前，草稿搜索为空、详情拒绝、三语 sitemap 不含草稿；修改后的草稿也未替换旧版公开内容。店铺审核前同样验证未进入三语 sitemap。实测来自国际出口 |
-| 图片上传 | 普通浏览器已上传一张 53,991 字节、1910×851 的截图；实际检测类型及公开响应为 JPEG，D1 媒体记录、草稿引用和真实解码一致。原私有图及审核后的公开图均已读取成功 |
-| 发现、收藏与举报 | 真实中文二元词检索叠加分类、PC、免费、标签及适配模型筛选返回目标商品；收藏写入及按地区读取均为 200。测试举报返回 201、进入管理员队列，并通过正常界面处理为 `resolved`，D1 确认一条对应处理审计 |
-| 分区审核修复 | 分区验收修订 `4be2d32a-d48f-4586-ae98-85d8e59c81a0` 已真实提交。仅 CN 批准时，D1 确认其成为当前修订、CN 有效上架且只有一份 CN 公开图片，国际区仍待审且未上架，修订保持 `pending`；国际出口的 API／HTML 为 404，搜索为空、收藏 `product:null`、三语 sitemap 不含商品。国际区随后通过正常审核；17:21:39 UTC 读回确认该修订为当前 `published`、两区均批准并有效上架、公开图片两份，原 CN 媒体令牌不变，保留此状态供内测使用 |
-| 下架与缓存 | 此前下架验收中，CN 下架后，D1 确认仅 CN 失效及对应公开图片删除，国际区保持上架且原图片实际返回 200。国际区于 17:01:37 UTC 下架后，D1 确认两区均失效、公开图片记录为零、私有原图保留一份。原国际区图片的确切 URL 于约四分钟后的抽样返回 404，非磁盘缓存且 `CF-Cache-Status: BYPASS`；随后商品 API 与 HTML 均为 404／`no-store`，HTML 带 `noindex`，搜索为空，收藏保留记录但 `product:null`，三语 sitemap 均为 200 且为空。图片响应 TTL 为 60 秒，详情内部缓存上限 60 秒；此次抽样确认最终撤销，不证明在 60 秒内完成，时限约束由实现及本地测试覆盖 |
-| 提交交互 | 真实保存及工作台刷新均为 200，两区勾选在保存后保留。首份商品、内容修订和最终分区验收修订均已通过真实验证提交并完成审核。界面有 Material 进度、错误与手动重试，配置／脚本各限 15 秒、首次验证限 120 秒；失败清令牌与旧实例，不自动重试，不接受旧回调恢复令牌 |
-| 真实停机演练 | 经明确批准，于北京时间 21:34:45–21:35:53 完成。启用期动态配置 API 与媒体返回 403；静态入口仍可进入 Access，已有 Access 会话的静态维护页实际返回 200，未使用磁盘缓存或 Service Worker；观察时间早于两条规则的恢复更新时间。恢复后各探测入口重新返回 Access 302，两条规则均关闭，定义、顺序及其他规则保持一致 |
-| 本地验证 | 310 项单元／集成测试、74 项桌面／移动端浏览器回归，以及构建、类型检查和部署预检通过；覆盖新库与旧库认证迁移、密码登录、角色／邮箱验证／封禁门禁、部分发布、旧区换版屏障、审核决定保留、扩区、媒体失败与撤销并发、提交状态竞争、地区结果及重试界面。浏览器回归使用项目已有的外部预览服务器模式执行，未修改线上环境 |
-
-该次内部测试业务闭环已有真实验收证据，Access、登录来源与测试商品状态按上述采样记录，不能代替双环境切换后的读回。注册、验证邮件、密码登录、管理员、商家入驻、两区权限、商品分别审核、公开详情／图片、搜索筛选、收藏和举报处理已有真实证据；当前仓库的账户认证简化仍待授权部署与相应远端回归。修订期间保留旧版、两区统一切换、首次单区先上架而另一地区待审时的国际区隔离，以及单区下架保留另一地区、最终撤销公开读取也已验证。费用监控和双域停机演练已通过。
-
-这些结果不代表全部生产边界均已逐项实测。Cloudflare HTTP Analytics 确认最终详情及媒体读取来自日本出口，详情在国际区批准前为 404、批准后为 200，国际区图片为 200。真实中国网络的正向及反向访问由用户明确延期，不阻断本次内测交付；真实拒绝、同内容新增区和并发异常等边界已有本地覆盖，未额外执行生产演练。逐请求密码计算 CPU 数值尚未取得。下架抽样没有验证 60 秒截止时间，不能将配置和测试中的时限写成真实观测结果。
+生产与测试分别记录实际分支、提交、Pages canonical deployment、Worker 活跃版本及发布控制库收据。测试数据库使用独立资源，生产候选的既有账户、商家、商品、媒体和业务配额必须保留；仅首次单独执行 MFA 清理迁移。不得以历史单环境验收代替本次绑定、身份和访问检查。
 
 每项记录目标部署 ID、时间和实测结果。使用专用商店资源、一店一商品和一张小型有效图片完成以下闭环，不执行无界压测、轮询或向其他收件人发信。
 

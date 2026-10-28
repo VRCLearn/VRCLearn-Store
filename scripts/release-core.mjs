@@ -3,6 +3,25 @@ import { migrationPlan } from "./migration-policy.mjs";
 
 export const releaseLimits = Object.freeze({ overallMs: 720000, lockWaitMs: 120000, lockAttempts: 13, pollMs: 5000, pollAttempts: 120, requestMs: 10000 });
 const shaPattern = /^[a-f0-9]{40}$/;
+// Only diagnostics defined by the release adapter may cross this boundary.
+// Transport, child-process and unexpected exception messages remain private.
+const operationFailureCodes = new Set([
+    "RELEASE_CHILD_FAILED", "RELEASE_TOKEN_MISSING", "RELEASE_API_PATH_REJECTED", "RELEASE_D1_RESULT_INVALID",
+    "REMOTE_HEAD_UNAVAILABLE", "RELEASE_LEASE_LOST", "RELEASE_SMOKE_CREDENTIALS_MISSING", "RELEASE_CONTROL_IS_BUSINESS_DATABASE", "RELEASE_CHECK_FAILED",
+    "SUPPORT_BINDING_MISMATCH", "SUPPORT_EXTRA_BINDING_REJECTED", "SUPPORT_RUNTIME_SECRET_MISSING", "SUPPORT_RUNTIME_SECURITY_MISMATCH",
+    "SUPPORT_EMAIL_BINDING_MISMATCH", "SUPPORT_DEPLOYMENT_NOT_EXCLUSIVE", "SUPPORT_CONFIG_NOT_GENERATED", "SUPPORT_RELEASE_IDENTITY_MISMATCH", "SUPPORT_POST_DEPLOY_MISMATCH",
+    "PAGES_BINDING_MISMATCH", "PAGES_EXTRA_BINDING_REJECTED", "PAGES_RUNTIME_SECURITY_MISMATCH", "PAGES_EXTRA_VARIABLE_REJECTED",
+    "PAGES_PROJECT_IDENTITY_MISMATCH", "PAGES_REPOSITORY_IDENTITY_MISMATCH", "PAGES_UNCOORDINATED_DEPLOYMENTS_ENABLED", "PAGES_FAIL_OPEN_REJECTED",
+    "PAGES_RUNTIME_SECRET_MISSING", "PAGES_SECRET_RETENTION_UNCONFIRMED", "PAGES_CANONICAL_MISMATCH", "PAGES_PREVIEW_ORIGIN_MISMATCH",
+    "SMOKE_SITE_TRANSPORT_FAILED", "SMOKE_SITE_HTTP_FAILED", "SMOKE_SITE_ACCESS_FAILED",
+    "SMOKE_API_TRANSPORT_FAILED", "SMOKE_API_HTTP_FAILED", "SMOKE_API_ACCESS_FAILED",
+    "SMOKE_MEDIA_TRANSPORT_FAILED", "SMOKE_MEDIA_HTTP_FAILED", "SMOKE_MEDIA_ACCESS_FAILED",
+    "SMOKE_DEFAULT_TRANSPORT_FAILED", "SMOKE_DEFAULT_HTTP_FAILED", "SMOKE_DEFAULT_ACCESS_FAILED",
+    "SMOKE_PREVIEW_TRANSPORT_FAILED", "SMOKE_PREVIEW_HTTP_FAILED", "SMOKE_PREVIEW_ACCESS_FAILED",
+    "SMOKE_CONFIG_TRANSPORT_FAILED", "SMOKE_CONFIG_HTTP_FAILED", "SMOKE_CONFIG_ACCESS_FAILED", "SMOKE_CONFIG_RESPONSE_INVALID", "SMOKE_CONFIG_RELEASE_MISMATCH",
+    "SMOKE_DEPLOYMENT_TRANSPORT_FAILED", "SMOKE_DEPLOYMENT_HTTP_FAILED", "SMOKE_DEPLOYMENT_RESPONSE_INVALID",
+    "D1_RESOURCE_IDENTITY_MISMATCH", "KV_RESOURCE_IDENTITY_MISMATCH", "KV_NAMESPACE_LIST_INVALID", "KV_NAMESPACE_LOOKUP_LIMIT",
+]);
 
 export class ReleaseFailure extends Error {
     constructor(code, stage, uncertain = false) { super(code); this.code = code; this.stage = stage; this.uncertain = uncertain; }
@@ -40,6 +59,9 @@ export async function runRelease(profile, identity, io, limits = releaseLimits) 
         io.log({ event: "release_stage", environment: profile.environment, sha: identity.sha, stage });
     };
     try {
+        stage = "resources";
+        checkTime();
+        await io.verifyResourceIdentities();
         await assertHead();
         stage = "lock";
         for (let attempt = 0; attempt < limits.lockAttempts; attempt++) {
@@ -93,7 +115,7 @@ export async function runRelease(profile, identity, io, limits = releaseLimits) 
         if (!published) throw new ReleaseFailure("PAGES_DEADLINE", stage, true);
         await mark("verify");
         await io.verifyPublished({ sha: identity.sha, workerVersionId: worker.versionId, pagesDeploymentId });
-        await assertLease();
+        await mark("smoke");
         await io.smoke({ sha: identity.sha, pagesDeploymentId });
         await assertHead();
         await assertLease();
@@ -102,7 +124,8 @@ export async function runRelease(profile, identity, io, limits = releaseLimits) 
         io.log({ event: "release_complete", environment: profile.environment, sha: identity.sha, pagesDeploymentId });
         return { environment: profile.environment, sha: identity.sha, pagesDeploymentId, workerVersionId: worker.versionId };
     } catch (error) {
-        const failure = error instanceof ReleaseFailure ? error : new ReleaseFailure("RELEASE_OPERATION_FAILED", stage, mutated);
+        const code = error instanceof Error && operationFailureCodes.has(error.message) ? error.message : "RELEASE_OPERATION_FAILED";
+        const failure = error instanceof ReleaseFailure ? error : new ReleaseFailure(code, stage, mutated);
         if (acquired && !completed) {
             // A write may have succeeded despite a timeout. Keep the lease until
             // an operator reads back the Worker, Pages and migration outcomes.

@@ -41,6 +41,38 @@ export function createCloudflareClient(token, transport = fetch, remainingMs = (
     };
 }
 
+const smokeFailureCodes = Object.freeze({
+    site: { transport: "SMOKE_SITE_TRANSPORT_FAILED", http: "SMOKE_SITE_HTTP_FAILED", access: "SMOKE_SITE_ACCESS_FAILED" },
+    api: { transport: "SMOKE_API_TRANSPORT_FAILED", http: "SMOKE_API_HTTP_FAILED", access: "SMOKE_API_ACCESS_FAILED" },
+    media: { transport: "SMOKE_MEDIA_TRANSPORT_FAILED", http: "SMOKE_MEDIA_HTTP_FAILED", access: "SMOKE_MEDIA_ACCESS_FAILED" },
+    default: { transport: "SMOKE_DEFAULT_TRANSPORT_FAILED", http: "SMOKE_DEFAULT_HTTP_FAILED", access: "SMOKE_DEFAULT_ACCESS_FAILED" },
+    preview: { transport: "SMOKE_PREVIEW_TRANSPORT_FAILED", http: "SMOKE_PREVIEW_HTTP_FAILED", access: "SMOKE_PREVIEW_ACCESS_FAILED" },
+    config: { transport: "SMOKE_CONFIG_TRANSPORT_FAILED", http: "SMOKE_CONFIG_HTTP_FAILED", access: "SMOKE_CONFIG_ACCESS_FAILED" },
+});
+
+async function smokeGet(target, url, { transport, remaining, sleep, headers }) {
+    const codes = smokeFailureCodes[target];
+    for (let attempt = 0; attempt < 3; attempt++) {
+        // Each attempt and its backoff share the release's absolute deadline.
+        const signal = AbortSignal.timeout(remaining());
+        let response, config, failure;
+        try { response = await transport(url, { method: "GET", redirect: "manual", signal, ...(headers ? { headers } : {}) }); }
+        catch { failure = codes.transport; }
+        if (!failure && response.status >= 500 && response.status <= 599) failure = codes.http;
+        if (!failure && target === "config" && response.ok && response.headers.get("content-type")?.includes("application/json")) {
+            try { config = await response.json(); }
+            catch (error) {
+                if (error instanceof SyntaxError) throw new Error("SMOKE_CONFIG_RESPONSE_INVALID");
+                failure = codes.transport;
+            }
+        }
+        if (!failure) return { response, config };
+        try { await response?.body?.cancel(); } catch { /* Discard only; never expose transport diagnostics. */ }
+        if (attempt === 2) throw new Error(failure);
+        await sleep(remaining([250, 750][attempt]));
+    }
+}
+
 export function verifySupportBindings(profile, settings) {
     const bindings = new Map((settings.bindings ?? []).map((binding) => [binding.name, binding]));
     const expected = {
@@ -83,9 +115,26 @@ export function createReleaseIO(profile, variables = process.env, overrides = {}
     };
     const api = overrides.api ?? createCloudflareClient(variables.CLOUDFLARE_API_TOKEN, overrides.fetch ?? fetch, remaining);
     const transport = overrides.fetch ?? fetch;
+    const sleep = overrides.sleep ?? ((milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, remaining(milliseconds))));
     const accountBase = `/accounts/${profile.accountId}`;
     const pagesBase = `${accountBase}/pages/projects/${profile.pagesProject}`;
     const supportBase = `${accountBase}/workers/scripts/${profile.supportWorker}`;
+    const readSmokeDeployment = async (id) => {
+        for (let attempt = 0; attempt < 3; attempt++) {
+            remaining();
+            try { return await api(`${pagesBase}/deployments/${encodeURIComponent(id)}`); }
+            catch (error) {
+                if (!(error instanceof ReleaseFailure)) throw error;
+                const status = /^CLOUDFLARE_HTTP_(\d{3})$/.exec(error.code)?.[1];
+                const transportFailure = error.code === "CLOUDFLARE_READ_FAILED";
+                if (error.code === "CLOUDFLARE_RESPONSE_INVALID") throw new Error("SMOKE_DEPLOYMENT_RESPONSE_INVALID");
+                if (!transportFailure && status === undefined) throw error;
+                const code = transportFailure ? "SMOKE_DEPLOYMENT_TRANSPORT_FAILED" : "SMOKE_DEPLOYMENT_HTTP_FAILED";
+                if ((!transportFailure && (Number(status) < 500 || Number(status) > 599)) || attempt === 2) throw new Error(code);
+                await sleep(remaining([250, 750][attempt]));
+            }
+        }
+    };
     const d1 = async (id, queries, write = false) => {
         const result = await api(`${accountBase}/d1/database/${id}/query`, { method: "POST", body: { batch: queries }, write });
         if (!Array.isArray(result) || result.length !== queries.length || result.some((entry) => entry.success !== true)) throw new Error("RELEASE_D1_RESULT_INVALID");
@@ -106,13 +155,45 @@ export function createReleaseIO(profile, variables = process.env, overrides = {}
     const io = {
         now: Date.now,
         setDeadline: (value) => { deadline = value; },
-        sleep: (milliseconds) => new Promise((resolveWait) => setTimeout(resolveWait, remaining(milliseconds))),
+        sleep,
         log: (value) => console.log(JSON.stringify(value)),
         async headSha(branch) {
             const result = child("git", ["ls-remote", "--exit-code", "origin", `refs/heads/${branch}`], { timeout: remaining(15000) });
             const value = result.split(/\s+/)[0];
             if (!/^[a-f0-9]{40}$/.test(value)) throw new Error("REMOTE_HEAD_UNAVAILABLE");
             return value;
+        },
+        async verifyResourceIdentities() {
+            // These reads precede even the release lease: a mistaken control ID
+            // must never send the first UPDATE to a business database.
+            const databases = [
+                { id: profile.releaseDatabaseId, name: profile.manifest?.control?.releaseDatabase?.name },
+                { id: profile.d1DatabaseId, name: profile.profile?.database?.name },
+            ];
+            for (const expected of databases) {
+                if (!expected.id || !expected.name) throw new Error("D1_RESOURCE_IDENTITY_MISMATCH");
+                const database = await api(`${accountBase}/d1/database/${expected.id}`);
+                if (database?.uuid !== expected.id || database?.name !== expected.name) throw new Error("D1_RESOURCE_IDENTITY_MISMATCH");
+            }
+            const expectedTitle = profile.profile?.state?.name;
+            if (!profile.stateId || !expectedTitle) throw new Error("KV_RESOURCE_IDENTITY_MISMATCH");
+            const seen = new Set();
+            // Fail closed beyond 500 namespaces rather than making an unbounded
+            // account-wide scan. Namespace keys and values are never read.
+            for (let page = 1; page <= 5; page++) {
+                const namespaces = await api(`${accountBase}/storage/kv/namespaces?page=${page}&per_page=100&order=id&direction=asc`);
+                if (!Array.isArray(namespaces) || namespaces.length > 100) throw new Error("KV_NAMESPACE_LIST_INVALID");
+                for (const namespace of namespaces) {
+                    if (typeof namespace?.id !== "string" || !/^[a-f0-9]{32}$/.test(namespace.id) || /^0+$/.test(namespace.id) || typeof namespace.title !== "string" || seen.has(namespace.id)) throw new Error("KV_NAMESPACE_LIST_INVALID");
+                    seen.add(namespace.id);
+                    if (namespace.id === profile.stateId) {
+                        if (namespace.title !== expectedTitle) throw new Error("KV_RESOURCE_IDENTITY_MISMATCH");
+                        return;
+                    }
+                }
+                if (namespaces.length < 100) throw new Error("KV_RESOURCE_IDENTITY_MISMATCH");
+            }
+            throw new Error("KV_NAMESPACE_LOOKUP_LIMIT");
         },
         async acquireLease(leaseId, sha, expiresAt) {
             const result = await control("UPDATE release_leases SET lease_id=?,release_sha=?,phase='lock',expires_at=?,pages_deployment_id=NULL,outcome='running',updated_at=? WHERE environment=? AND lease_id IS NULL", [leaseId, sha, expiresAt, Date.now(), profile.environment], true);
@@ -204,19 +285,27 @@ export function createReleaseIO(profile, variables = process.env, overrides = {}
             await io.verifyRemoteConfiguration();
         },
         async smoke({ sha, pagesDeploymentId }) {
-            const deployment = await api(`${pagesBase}/deployments/${encodeURIComponent(pagesDeploymentId)}`);
+            const deployment = await readSmokeDeployment(pagesDeploymentId);
             const preview = new URL(deployment.url);
             if (preview.protocol !== "https:" || !preview.hostname.endsWith(`.${profile.pagesProject}.pages.dev`)) throw new Error("PAGES_PREVIEW_ORIGIN_MISMATCH");
-            const anonymous = [profile.origin + "/en", profile.origin + "/api/v1/config", profile.mediaOrigin + "/intl/release-probe", `https://${profile.pagesProject}.pages.dev/en`, preview.origin + "/en"];
-            for (const url of anonymous) {
-                const response = await transport(url, { redirect: "manual", signal: AbortSignal.timeout(remaining()) });
+            const anonymous = [
+                ["site", profile.origin + "/en"], ["api", profile.origin + "/api/v1/config"], ["media", profile.mediaOrigin + "/intl/release-probe"],
+                ["default", `https://${profile.pagesProject}.pages.dev/en`], ["preview", preview.origin + "/en"],
+            ];
+            for (const [target, url] of anonymous) {
+                const { response } = await smokeGet(target, url, { transport, remaining, sleep });
+                try { await response.body?.cancel(); } catch { /* No response body is needed for Access redirects. */ }
+                if (response.status !== 302) throw new Error(smokeFailureCodes[target].http);
                 const location = response.headers.get("location");
-                if (response.status !== 302 || !location || !new URL(location).hostname.endsWith(".cloudflareaccess.com")) throw new Error("ACCESS_SMOKE_FAILED");
+                let authorizedRedirect = false;
+                try { authorizedRedirect = Boolean(location && new URL(location).hostname.endsWith(".cloudflareaccess.com")); } catch { /* Treat malformed redirects as a semantic failure. */ }
+                if (!authorizedRedirect) throw new Error(smokeFailureCodes[target].access);
             }
-            const response = await transport(profile.origin + "/api/v1/config", { redirect: "manual", signal: AbortSignal.timeout(remaining()), headers: { "CF-Access-Client-Id": variables.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": variables.CF_ACCESS_CLIENT_SECRET } });
-            if (!response.ok || !response.headers.get("content-type")?.includes("application/json")) throw new Error("APPLICATION_SMOKE_FAILED");
-            const config = await response.json();
-            if (config.releaseSha !== sha || config.deploymentEnvironment !== profile.environment) throw new Error("APPLICATION_RELEASE_MISMATCH");
+            const { response, config } = await smokeGet("config", profile.origin + "/api/v1/config", { transport, remaining, sleep, headers: { "CF-Access-Client-Id": variables.CF_ACCESS_CLIENT_ID, "CF-Access-Client-Secret": variables.CF_ACCESS_CLIENT_SECRET } });
+            if (response.status === 302 || response.status === 401 || response.status === 403) throw new Error(smokeFailureCodes.config.access);
+            if (!response.ok) throw new Error(smokeFailureCodes.config.http);
+            if (!response.headers.get("content-type")?.includes("application/json")) throw new Error("SMOKE_CONFIG_RESPONSE_INVALID");
+            if (config?.releaseSha !== sha || config?.deploymentEnvironment !== profile.environment) throw new Error("SMOKE_CONFIG_RELEASE_MISMATCH");
         },
     };
     return { ...io, ...overrides };
