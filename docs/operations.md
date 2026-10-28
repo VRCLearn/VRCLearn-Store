@@ -36,6 +36,8 @@ npm.cmd run test:browser
 
 `npm run dev:worker` 和 `npm run dev:pages` 使用 `deployment/local-support.jsonc`、`deployment/local-pages.jsonc`，不引用云端生产资源。复制相应 `.dev.vars.example` 后将 ORIGIN 设成同一本地 Pages 地址；不要配置真实发信或生产控制令牌。普通本地请求没有可信 `request.cf.country` 时拒绝商品查询，不以自定义请求头冒充地区。浏览器回归在本地运行，云端构建不依赖本机 Chrome。
 
+不支持未指定配置的裸 `wrangler` 开发或发布命令。使用上面的 npm 脚本，或显式传入 `--config deployment/local-*.jsonc`；远端发布只能由发布器生成并选定配置，不会回退到生产默认值。
+
 ## 自动发布
 
 `test` 验证后直接向 `main` 发起 PR；两分支共用业务代码和两份环境清单，合并时不改配置、不复制数据。为 `main` 设置 PR 与必需检查保护，合并后的提交重新测试和构建。没有 GitHub Actions 发布流程。
@@ -47,6 +49,10 @@ npm ci && node scripts/environment.mjs prepare-pages && npm test && npm run buil
 ```
 
 Pages 两套均设置 `SKIP_DEPENDENCY_INSTALL=1`，由上面的 `npm ci` 按锁文件安装一次。固定构建身份变量是 `DEPLOYMENT_ENV` 和 `PAGES_PROJECT_NAME`；`RELEASE_SHA` 只由已持锁的发布器更新。Pages 构建核对 `CF_PAGES_BRANCH`、`CF_PAGES_COMMIT_SHA` 与预期 SHA，生成 `.wrangler/deploy/config.json` 指向本环境的配置；最终预检再次核对分支 HEAD。不得以 `commit_hash` 参数冒充 Git 来源固定：[原生 Git 部署实际使用分支 HEAD](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/)。
+
+项目根目录不能保留 Pages 自动识别的 `wrangler.json`、`wrangler.jsonc` 或 `wrangler.toml`，包括写着本地绑定的文件。Pages 会在执行构建命令前读取根配置并覆盖构建变量，导致预期 SHA／环境身份丢失。本地配置统一放在 `deployment/local-*.jsonc` 并显式指定；云端配置仅由通过身份校验的 `prepare-pages` 生成。
+
+静态 `_headers` 从模板在 `build-static` 阶段生成，`img-src` 仅允许本环境清单的媒体域名；本地仅允许同源及本地配置中的 loopback 媒体地址。最终预检精确核对生成结果，不能直接把两套媒体域名加入同一个允许列表。动态详情 HTML 同样使用当前环境的 `MEDIA_ORIGIN` 生成 CSP。
 
 Workers Builds 安装命令使用 `npm ci`；测试的发布命令与生产候选分别为：
 
@@ -73,33 +79,30 @@ Builds 管理权限和发布权限分开：管理接口需要 Workers Builds Con
 
 `script_tag`／`external_script_id` 是 `GET /workers/scripts` 返回的不可变 tag，不是 Worker 名称；`build_token_uuid` 也不是原始 API token 或其 token ID。新用户 API Token 通过 `POST /builds/tokens` 的 `{build_token_name,build_token_secret,cloudflare_token_id}` 注册后，使用返回的 build token UUID，不能复用其他项目的部署 token。
 
-`cf builds workers create --body` 对应 `POST /accounts/{account}/builds/workers`。以下为测试配置的最小请求形状，尖括号值必须先读回核对；不要把 Secret 放进请求文件或命令历史：
+使用官方文档化的 `cf builds triggers create --body`（`POST /accounts/{account}/builds/triggers`）创建精确分支触发器。以下为测试环境的完整请求形状；尖括号值先读回核对，Secret 通过后续独立请求配置：
 
 ```json
 {
-    "script_tag": "<test-worker-tag>",
-    "git_repository": {
-        "provider_type": "github",
-        "provider_account_id": "<github-owner-id>",
-        "provider_account_name": "VRCLearn",
-        "repo_id": "<github-repository-id>",
-        "repo_name": "VRCLearn-Store",
-        "branch": "test"
-    },
-    "production_settings": {
-        "build_command": "npm ci",
-        "deploy_command": "node scripts/release.mjs --environment test",
-        "build_token_uuid": "<test-build-token-uuid>",
-        "environment_variables": {},
-        "root_directory": "/"
-    },
-    "previews_enabled": false
+    "external_script_id": "<test-worker-tag>",
+    "repo_connection_uuid": "<repository-connection-uuid>",
+    "build_token_uuid": "<test-build-token-uuid>",
+    "trigger_name": "test-vrclearn-store",
+    "branch_includes": ["test"],
+    "branch_excludes": [],
+    "build_caching_enabled": false,
+    "build_command": "npm ci",
+    "deploy_command": "node scripts/release.mjs --environment test",
+    "path_includes": ["*"],
+    "path_excludes": [],
+    "root_directory": "/"
 }
 ```
 
-此形状通过 `cf --dry-run` 只代表本地请求构造有效，不代表远端授权、安装或创建成功。生产候选使用自己的 Worker tag、build token、`main` 与 `--environment production`。已有配置用 `PATCH /builds/workers/{script_tag}` 仅更新需要的 `git_repository.branch`、`production_settings` 和 `previews_enabled`。若使用底层 `POST /builds/triggers`，必须填写 `external_script_id`、`repo_connection_uuid`、`build_token_uuid`、命令及路径，分支包含只设本环境分支、排除为空；不能额外保留通配 preview trigger。
+生产候选使用自己的 Worker tag、build token、触发器名称、`main` 与 `--environment production`。已有配置用 `PATCH /builds/triggers/{trigger_uuid}` 仅更新必要字段，不额外保留通配 preview trigger。该接口仍属于 Workers Builds 原生发布，不改变发布方法。[官方创建流程](https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/#step-5-create-a-production-trigger)
 
-创建时可令 `production_settings.environment_variables={}`，随后单独设置变量与秘密；官方 `cf` 生成源码的 `compactBody` 明确保留该路径的空对象。CLI 对 `workers create/get` 直接输出服务端 result，没有定义 `trigger_uuid` 的固定嵌套位置。创建后使用文档化的 `GET /builds/workers/{script_tag}/triggers`，按 Worker tag、仓库与精确分支筛选唯一项，再取该项 `trigger_uuid`；不要假设它位于 create 响应顶层。[CLI 创建源码](https://github.com/cloudflare/cf/blob/main/packages/cli/src/commands/_generated/builds/workers/create.ts)、[官方 trigger 读取流程](https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/#step-2-get-your-trigger-uuid)
+本次 `workers create` 的精简原始请求实际被服务端以 400／12002 拒绝，不能将 `--dry-run` 透传成功当成服务端校验成功。该高层入口的 CLI flags 路径即使 `previews_enabled=false` 仍要求 `previews_base_config` 中的三个命令／token 字段；raw body 会跳过 CLI 默认值和提示。缓存开关在 schema 中为 optional，GitHub owner／repo ID 已与仓库元数据核对，现有错误没有足够详情将其归因于某个可选字段。部署采用上述文档化触发器接口，不盲目重试高层创建。
+
+CLI 对 `workers create/get` 直接输出服务端 result，没有定义 `trigger_uuid` 的固定嵌套位置。创建后使用文档化的 `GET /builds/workers/{script_tag}/triggers`，按 Worker tag、仓库与精确分支筛选唯一项，再取该项 `trigger_uuid`；不要假设它位于 create 响应顶层。[CLI 创建源码](https://github.com/cloudflare/cf/blob/main/packages/cli/src/commands/_generated/builds/workers/create.ts)、[官方 trigger 读取流程](https://developers.cloudflare.com/workers/ci-cd/builds/api-reference/#step-2-get-your-trigger-uuid)
 
 构建期变量单独通过 `PATCH /builds/triggers/{trigger_uuid}/environment_variables` 上传；它与 Pages 的 `type/value` 格式不同：
 
@@ -243,7 +246,7 @@ Cron 通过控制专用 `QUOTA.getByName("account-monitor").checkBudget()` 执�
 | 测试 D1 `7bb66e28-d981-4db2-8963-4e6820ba7a14` | 先查重确认唯一 probe 表不存在，再创建；同一 REST batch 内两次插入相同主键，实际返回 HTTP 400／7500 UNIQUE 错误，随后读回 `count(*)=0`。首条写入已回滚。最终删除该 probe 表，再查 `sqlite_master` 为空，无 probe 残留；未写生产库或控制库 |
 | 事务结论 | 此次实测支持当前 REST batch 的约束故障回滚行为；公开 REST 文档确认 batch 请求形状，明确事务保证见 Worker binding 文档，不能把一次观察提升为永久平台契约。发布器仍逐项校验响应、保留结果不明锁，并要求迁移异常人工读回；本地 SQLite 回滚测试只覆盖客户端逻辑 |
 | Pages 稀疏变量 PATCH | 本次受控元数据 PATCH 前后，选定项目的 10 个变量名全部保留，`TURNSTILE_SECRET_KEY` 仍为 `secret_text`，无需恢复；没有读取或输出秘密值。发布器仍在每次 PATCH 后检查 Secret 名称保留，不依赖这次采样永久放行 |
-| Pages 自动触发与手动 API | 官方 source 标志定义针对 Git push／commit 自动触发，创建部署 API 独立支持 Git 分支 HEAD；据此设计为关闭自动触发后由协调器调用 API。此项仅做文档／CLI 契约核对，没有为验证启动部署，仍须首次真实发布确认。若返回 `is_skipped` 或 `status=skipped`，立即停止并保留闭锁，不重试或自动开启推送触发 |
+| Pages 自动触发与手动 API | 测试 Pages 在 `production_deployments_enabled=false`、`preview_deployment_setting=none` 时，协调器已实际启动 Git 部署 `28eb4d5e-3301-4c29-a4ca-d06ad5532e9b`，克隆正确提交 `6b5944b43b69893cdd24c537b70638b0b8bab6b5`。该轮在 `prepare-pages` 因身份变量被旧根配置覆盖而失败，未产生 canonical deployment；这证明手动 Git 触发可用，不代表整轮发布成功。若返回 `is_skipped` 或 `status=skipped`，立即停止并保留闭锁，不重试或自动开启推送触发 |
 
 依据：[D1 REST 请求](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/)、[Worker binding batch 事务](https://developers.cloudflare.com/d1/worker-api/d1-database/#batch)、[Pages 分支自动部署控制](https://developers.cloudflare.com/pages/configuration/branch-build-controls/)、[Pages 原生 Git 部署 API](https://developers.cloudflare.com/api/resources/pages/subresources/projects/subresources/deployments/methods/create/)。
 

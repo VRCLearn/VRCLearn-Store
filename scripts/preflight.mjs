@@ -1,9 +1,15 @@
 import { readFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { buildEdgePolicies, buildEnvironmentConfigs, loadEnvironments, repositoryRoot, validateEnvironments } from "./environment.mjs";
+import { staticBuildContext, validateStaticHeaders } from "./static-headers.mjs";
+
+export function defaultConfigurationFiles(root = repositoryRoot) {
+    return ["", "worker"].flatMap((directory) => ["wrangler.json", "wrangler.jsonc", "wrangler.toml"].map((name) => resolve(root, directory, name))).filter(existsSync);
+}
 
 export function validateDeploymentArtifacts(manifest, environment, configs, releaseSha) {
     const errors = validateEnvironments(manifest);
@@ -36,10 +42,16 @@ export function validateEdgeArtifacts(manifest, policies) {
 export async function runPreflight(variables = process.env) {
     const manifest = await loadEnvironments();
     const errors = validateEnvironments(manifest);
+    if (defaultConfigurationFiles().length) errors.push("Default Wrangler configurations are forbidden; use an explicit local or generated deployment configuration");
     if (!errors.length) {
         try { errors.push(...validateEdgeArtifacts(manifest, JSON.parse(await readFile(resolve(repositoryRoot, "deployment/edge-policies.json"), "utf8")))); }
         catch { errors.push("The shared edge policy artifact is unavailable"); }
     }
+    try {
+        const context = await staticBuildContext(variables);
+        const [template, headers] = await Promise.all([readFile(resolve(repositoryRoot, "public/_headers"), "utf8"), readFile(resolve(repositoryRoot, "dist/_headers"), "utf8")]);
+        errors.push(...validateStaticHeaders(template, headers, context.mediaOrigin));
+    } catch { errors.push("The selected environment's generated static headers are unavailable or invalid"); }
     if (variables.CF_PAGES === "1") {
         const environment = variables.DEPLOYMENT_ENV;
         const profile = manifest[environment];

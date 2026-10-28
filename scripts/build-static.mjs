@@ -1,4 +1,9 @@
 import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { buildStaticHeaders, staticBuildContext } from "./static-headers.mjs";
+
+const context = await staticBuildContext();
+const headerTemplate = await readFile(new URL("../public/_headers", import.meta.url), "utf8");
+await writeFile(new URL("../dist/_headers", import.meta.url), buildStaticHeaders(headerTemplate, context.mediaOrigin));
 
 const source = await readFile(new URL("../dist/index.html", import.meta.url), "utf8");
 const copy = {
@@ -14,4 +19,4 @@ for (const [locale, text] of Object.entries(copy)) {
 }
 const routes = JSON.parse(await readFile(new URL("../dist/_routes.json", import.meta.url), "utf8"));
 if (routes.include.includes("/*")) throw new Error("Refusing a catch-all function route: static requests must stay static.");
-console.log("Built three static homepages; dynamic routes remain explicitly scoped.");
+console.log(`Built three static homepages and ${context.environment} media policy; dynamic routes remain explicitly scoped.`);
