@@ -49,6 +49,8 @@ npm run dev
 
 测试主 Worker 连接 GitHub 的 `VRCLearn/VRCLearn-Store`，固定生产分支为仓库的 `test` 分支，不开启其他分支或临时 Preview 自动发布。这里的 Cloudflare“生产分支”只是测试 Worker 的发布分支，不代表商店生产环境开通。
 
+当前 Git 触发器名称为 `test-vrclearn-store-release`，归属主 Worker `test-vrclearn-store`；辅助 Worker 由同一发布器协调，不单独监听 Git。构建镜像固定 Node.js 24，部署分支过滤仅包含 `test`。GitHub 必需检查应对应主 Worker 的 Workers Builds 检查，不能沿用已退役辅助 Worker 的检查名称。
+
 构建命令：
 
 ```sh
