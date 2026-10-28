@@ -28,6 +28,24 @@ const publicColumns = `g.id, g.shop_id, p.revision_id, p.media_token, r.content_
 const publicWhere = `p.region = ? AND p.active = 1 AND COALESCE(owner.banned, 0) = 0
     AND (p.region != 'cn' OR COALESCE(json_extract(r.content_json, '$.r18'), 0) = 0)`;
 
+export async function listRecommendations(request: Request, env: AppEnv): Promise<{ items: Product[] }> {
+    await mode(env);
+    const region = regionOf(request);
+    await publicRate(request, env);
+    if ([...new URL(request.url).searchParams].length) throw new HttpError(400, "INVALID_FILTER", "Recommendations do not accept query parameters.");
+    // Start with presentation completeness, without counters or engagement writes.
+    const quality = `(CASE WHEN json_array_length(r.content_json, '$.mediaIds') > 0 THEN 4 ELSE 0 END
+        + CASE WHEN length(json_extract(r.content_json, '$.description')) >= 300 THEN 3 ELSE 0 END
+        + CASE WHEN json_array_length(r.content_json, '$.compatibleModels') > 0 THEN 1 ELSE 0 END)`;
+    const recentFrom = publicFrom.replace("FROM publications p", "FROM recent p");
+    const rows = await env.DB.prepare(`WITH recent AS MATERIALIZED (
+        SELECT * FROM publications WHERE region = ? AND active = 1
+        ORDER BY updated_at DESC, product_id DESC LIMIT 96
+    ) SELECT ${publicColumns} ${recentFrom}
+        WHERE ${publicWhere} ORDER BY ${quality} DESC, p.updated_at DESC, g.id DESC LIMIT 6`).bind(region, region).all<PublicRow>();
+    return { items: rows.results.map((row) => toProduct(row, region, env)) };
+}
+
 export function toProduct(row: PublicRow, region: Region, env: AppEnv): Product {
     const content = JSON.parse(row.content_json) as ProductInput;
     const shop = JSON.parse(row.shop_json) as ShopInput;

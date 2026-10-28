@@ -84,6 +84,7 @@ md-filled-card { min-width: 0; --md-filled-card-container-color: var(--md-sys-co
 .tile-clothing { left: 32%; top: 49%; transform: rotate(4deg); background: var(--md-sys-color-surface-container-lowest); color: var(--md-sys-color-primary); }
 .art-caption { position: absolute; right: 25px; bottom: 17px; font-size: 11px; letter-spacing: .07em; }
 .home-categories { margin-block: 56px 64px; }
+.home-recommendations { margin-block: 40px 56px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-block-end: 24px; }
 .section-heading h1, .section-heading h2, .section-heading h3 { margin: 0; }
 .section-heading .eyebrow { margin-block-end: 8px; }

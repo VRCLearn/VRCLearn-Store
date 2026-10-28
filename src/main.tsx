@@ -6,6 +6,8 @@ import { localeFromPath } from "./i18n";
 import { Busy, LocaleContext, useLocale } from "./ui";
 import { Card, Icon, IconButton, InteractionState, LinkButton, MenuButton } from "./material";
 import { ThemeProvider } from "./theme/provider";
+import { HomeRecommendations } from "./recommendations";
+import { HomeBanners } from "./home-banners";
 import "./styles.css";
 
 const AccountPage = lazy(() => import("./account").then((module) => ({ default: module.AccountPage })));
@@ -44,8 +46,6 @@ function ShellContent() {
     }
     const navigation = <>
         <NavLink to={path("/search")}><Icon name="search" /><span>{t.browse}</span></NavLink>
-        <NavLink to={path("/favorites")}><Icon name="favorite" /><span>{t.favorites}</span></NavLink>
-        <NavLink to={path("/merchant")}><Icon name="storefront" /><span>{t.merchant}</span></NavLink>
     </>;
     return <>
         <a className="skip-link" href="#main-content">{t.content}</a>
@@ -63,7 +63,11 @@ function ShellContent() {
                         { value: "ja", label: "日本語", selected: locale === "ja" }
                     ]} onSelect={(next) => navigate(switchLanguage(next))} />
                     <IconButton variant="tonal" icon="palette" label={t.theme} aria-haspopup="dialog" aria-expanded={appearanceOpen} onClick={() => { setAppearanceLoaded(true); setAppearanceOpen(true); }} />
-                    <IconButton variant="tonal" icon="person" label={t.account} href={path("/account")} />
+                    <MenuButton label={t.account} icon="person" items={[
+                        { value: "/account", label: t.account, icon: "person" },
+                        { value: "/favorites", label: t.favorites, icon: "favorite" },
+                        { value: "/merchant", label: t.merchant, icon: "storefront" }
+                    ]} onSelect={(next) => navigate(path(next))} />
                 </div>
             </div>
             <nav className="mobile-nav" aria-label={t.browse}>{navigation}</nav>
@@ -100,6 +104,8 @@ function HomePage() {
                 <div className="art-caption">VRCLearn Store</div>
             </div>
         </section>
+        <HomeBanners />
+        <HomeRecommendations />
         <section className="home-categories">
             <div className="section-heading"><div><p className="eyebrow">{t.featuredHeading}</p><h2>{t.categories}</h2></div><LinkButton href={path("/search")} variant="text" icon="arrow_forward">{t.all}</LinkButton></div>
             <div className="category-grid">{CATEGORIES.map((category) =>

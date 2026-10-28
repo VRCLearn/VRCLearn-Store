@@ -1,0 +1,10 @@
+/* Material Web provides cards and controls; it has no carousel component. */
+.home-banners { margin-block: 48px; }
+.home-banner-track { display: flex; gap: 20px; overflow-x: auto; scroll-snap-type: x mandatory; overscroll-behavior-x: contain; }
+.home-banner { flex: 0 0 100%; display: flex; flex-direction: row; align-items: center; justify-content: space-between; gap: 32px; padding: 40px; scroll-snap-align: start; }
+.home-banner h3 { font-size: clamp(26px, 4vw, 40px); }
+.home-banner-symbol { color: var(--md-sys-color-primary); }
+@media (max-width: 600px) {
+    .home-banner { gap: 16px; padding: 24px; }
+    .home-banner-symbol { display: none; }
+}

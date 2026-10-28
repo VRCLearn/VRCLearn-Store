@@ -44,15 +44,16 @@ async function expectThemedScrollbar(page: Page) {
     if (appearance.fine) expect(appearance.color).toBe(appearance.expected);
 }
 
-test("static storefront uses Material menus and preserves a customized theme without API calls", async ({ page }, testInfo) => {
+test("static storefront uses Material menus and preserves a customized theme with one recommendation request", async ({ page }, testInfo) => {
     const apiCalls: string[] = [];
     const errors: string[] = [];
     page.on("request", (request) => { if (request.url().includes("/api/")) apiCalls.push(request.url()); });
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/v1/recommendations", (route) => route.fulfill({ json: { items: [] } }));
     await page.emulateMedia({ colorScheme: "light" });
     await page.goto("/en");
     await expect(page.getByRole("heading", { name: "Find your next expression." })).toBeVisible();
-    await expect(page.locator("header md-menu")).toHaveCount(1);
+    await expect(page.locator("header md-menu")).toHaveCount(2);
     await expect(page.locator("header md-filled-tonal-icon-button")).toHaveCount(3);
     await expectThemedScrollbar(page);
 
@@ -99,11 +100,12 @@ test("static storefront uses Material menus and preserves a customized theme wit
     await page.getByRole("button", { name: "Language", exact: true }).press("ArrowDown");
     await page.getByRole("menuitem", { name: "简体中文", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
-    await expect(page.locator("header md-menu")).not.toBeVisible();
+    await expect(page.getByRole("menu", { name: "语言", exact: true })).not.toBeVisible();
     await page.getByRole("button", { name: "语言", exact: true }).click();
     await page.getByRole("menuitem", { name: "日本語", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("lang", "ja");
-    expect(apiCalls).toEqual([]);
+    // One request per page load; this test explicitly reloads once.
+    expect(apiCalls.map((url) => new URL(url).pathname)).toEqual(["/api/v1/recommendations", "/api/v1/recommendations"]);
     expect(errors).toEqual([]);
     expect(await page.evaluate(() => document.querySelectorAll("header select, header button").length)).toBe(0);
     await expectReadableHero(page, testInfo.project.name === "mobile");

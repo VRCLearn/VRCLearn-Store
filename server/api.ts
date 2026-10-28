@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { MerchantProduct, ProductInput, Region, SessionUser, ShopInput, Workspace } from "../shared/contracts";
 import type { AppEnv } from "./env";
-import { getProduct, getShop, listProducts } from "./catalog";
+import { getProduct, getShop, listProducts, listRecommendations } from "./catalog";
 import { deleteMediaKeys, deletePublicMedia, imageInfo, ownedMedia, publishMedia, releaseMediaStorage, reserveMediaStorage } from "./media";
 import { failure, HttpError, jsonBody, mode, readBytes, regionOf, reserve, secureOrigin, session, turnstile } from "./security";
 import { decisionSchema, productSchema, regionSchema, searchTokens, shopSchema, submitSchema } from "./validation";
@@ -191,6 +191,7 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
         if (writing) secureOrigin(request, env);
         await mode(env);
         if (path === "config" && request.method === "GET") return response({ turnstileSiteKey: env.TURNSTILE_SITE_KEY || "" });
+        if (path === "recommendations" && request.method === "GET") return response(await listRecommendations(request, env));
         if (path === "me" && request.method === "GET") {
             try { return response({ user: await session(request, env) }); }
             catch (error) { if (error instanceof HttpError && error.status === 401) return response({ user: null }); throw error; }
