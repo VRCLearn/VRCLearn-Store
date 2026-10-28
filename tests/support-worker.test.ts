@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../worker/index";
-import { createAuth, getSessionUser } from "../worker/auth";
+import { createAuth, getSessionUser, handleAuth } from "../worker/auth";
 import { runMonitor, type BudgetState } from "../worker/monitor";
 import { cleanupStaleMedia } from "../edge/cleanup";
 import { cleanupExpiredAuth } from "../worker/session-cleanup";
@@ -32,6 +32,17 @@ beforeEach(() => { vi.clearAllMocks(); vi.spyOn(console, "warn").mockImplementat
 afterEach(() => vi.restoreAllMocks());
 
 describe("support Worker emergency stop", () => {
+    it("returns client-readable auth failures without changing internal API failures", async () => {
+        const env = environment("normal");
+        vi.mocked(handleAuth).mockRejectedValueOnce(new Error("Authentication binding failed"));
+        const response = await worker.fetch(new Request("https://support.internal/api/auth/sign-in/email"), env);
+        expect(response.status).toBe(503);
+        expect(await response.json()).toEqual({ code: "SERVICE_UNAVAILABLE", message: expect.any(String), requestId: response.headers.get("X-Request-ID") });
+        expect(response.headers.get("Cache-Control")).toBe("no-store");
+        vi.mocked(getSessionUser).mockRejectedValueOnce(new Error("Session database unavailable"));
+        const internal = await worker.fetch(new Request("https://support.internal/internal/session"), env);
+        expect(await internal.json()).toEqual({ error: { code: "SERVICE_UNAVAILABLE", message: expect.any(String), requestId: expect.any(String) } });
+    });
     it.each(["maintenance", "kv-failure"])("rejects internal session requests on %s before auth or D1", async (mode) => {
         const env = environment("maintenance");
         if (mode === "kv-failure") vi.spyOn(env.STATE, "get").mockRejectedValue(new Error("KV unavailable"));

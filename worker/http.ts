@@ -24,6 +24,14 @@ export function failure(code: string, message: string, status: number, retryAfte
     });
 }
 
+export function authFailure(code: string, message: string, status: number, retryAfter?: number): Response {
+    const requestId = crypto.randomUUID();
+    return Response.json({ code, message, requestId }, {
+        status,
+        headers: { "Cache-Control": "no-store", "X-Request-ID": requestId, ...(retryAfter ? { "Retry-After": String(retryAfter) } : {}) },
+    });
+}
+
 export async function digestKey(input: string): Promise<string> {
     const hash = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(input));
     return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, "0")).join("");

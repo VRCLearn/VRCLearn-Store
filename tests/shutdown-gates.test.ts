@@ -36,7 +36,37 @@ describe("application emergency stop", () => {
             expect(result.status).toBe(503);
             expect(result.headers.get("Cache-Control")).toBe("no-store");
             expect(result.headers.get("Retry-After")).toBe("60");
+            expect(await result.json()).toEqual({ code: "SERVICE_PAUSED", message: expect.any(String), requestId: result.headers.get("X-Request-ID") });
+            expect(result.headers.get("X-Frame-Options")).toBe("DENY");
             expect(auth).not.toHaveBeenCalled();
+        } finally { f.database.close(); }
+    });
+    it("returns a client-readable auth failure when the support binding fails", async () => {
+        const f = testEnvironment();
+        try {
+            vi.spyOn(f.env.AUTH, "fetch").mockRejectedValue(new Error("Support unavailable"));
+            const context = Object.assign({} as EventContext<AppEnv, string, Record<string, unknown>>, { request: edgeRequest("/api/auth/get-session"), env: f.env });
+            const response = await onRequest(context);
+            expect(response.status).toBe(503);
+            expect(response.headers.get("Retry-After")).toBe("60");
+            expect(await response.json()).toEqual({ code: "SERVICE_UNAVAILABLE", message: expect.any(String), requestId: response.headers.get("X-Request-ID") });
+        } finally { f.database.close(); }
+    });
+    it("preserves successful authentication cookies and security headers", async () => {
+        const f = testEnvironment();
+        try {
+            const headers = new Headers({ "Content-Type": "application/json" });
+            headers.append("Set-Cookie", "session=first; HttpOnly; Secure; SameSite=Lax");
+            headers.append("Set-Cookie", "proof=second; HttpOnly; Secure; SameSite=Lax");
+            vi.spyOn(f.env.AUTH, "fetch").mockResolvedValue(new Response('{"status":true}', { headers }));
+            const context = Object.assign({} as EventContext<AppEnv, string, Record<string, unknown>>, { request: edgeRequest("/api/auth/get-session"), env: f.env });
+            const response = await onRequest(context);
+            expect(response.status).toBe(200);
+            expect(response.headers.getSetCookie()).toEqual(headers.getSetCookie());
+            expect(response.headers.get("Cache-Control")).toBe("no-store");
+            expect(response.headers.get("X-Content-Type-Options")).toBe("nosniff");
+            expect(response.headers.get("X-Frame-Options")).toBe("DENY");
+            expect(await response.json()).toEqual({ status: true });
         } finally { f.database.close(); }
     });
     it("forwards auth in restricted mode and still rejects an unapproved host", async () => {

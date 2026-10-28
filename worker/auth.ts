@@ -3,7 +3,7 @@ import { twoFactor } from "better-auth/plugins";
 import type { SessionUser } from "../shared/contracts";
 import type { SupportEnv } from "./env";
 import { sendAccountEmail, reserve, accountEmailsEnabled } from "./email";
-import { digestKey, failure, readBounded } from "./http";
+import { authFailure, digestKey, readBounded } from "./http";
 import { hashPassword, verifyPassword } from "./password";
 import { serviceEnabled } from "../edge/budget";
 
@@ -108,32 +108,32 @@ export async function verifyTurnstile(env: SupportEnv, request: Request, token: 
 }
 
 export async function handleAuth(request: Request, env: SupportEnv): Promise<Response> {
-    if (!await serviceEnabled(env)) return failure("SERVICE_PAUSED", "Account operations are temporarily paused", 503, 60);
+    if (!await serviceEnabled(env)) return authFailure("SERVICE_PAUSED", "Account operations are temporarily paused", 503, 60);
     const url = new URL(request.url);
     const path = url.pathname.slice("/api/auth".length);
     const passwordResetLink = request.method === "GET" && /^\/reset-password\/[A-Za-z0-9_-]{8,256}$/.test(path);
-    if ((!AUTH_PATHS.has(path) && !passwordResetLink) || !["GET", "POST"].includes(request.method)) return failure("NOT_FOUND", "Endpoint not found", 404);
-    if (request.method === "POST" && request.headers.get("origin") !== env.ORIGIN) return failure("INVALID_ORIGIN", "Origin rejected", 403);
+    if ((!AUTH_PATHS.has(path) && !passwordResetLink) || !["GET", "POST"].includes(request.method)) return authFailure("NOT_FOUND", "Endpoint not found", 404);
+    if (request.method === "POST" && request.headers.get("origin") !== env.ORIGIN) return authFailure("INVALID_ORIGIN", "Origin rejected", 403);
     const ip = request.headers.get("cf-connecting-ip");
-    if (!ip && env.ENVIRONMENT === "production") return failure("IP_UNAVAILABLE", "Trusted client address is missing", 403);
+    if (!ip && env.ENVIRONMENT === "production") return authFailure("IP_UNAVAILABLE", "Trusted client address is missing", 403);
     const ipKey = await digestKey(ip ?? "local");
     const operation = passwordResetLink ? "/reset-password" : path;
-    if (!(await env.AUTH_RATE_LIMIT.limit({ key: `${ipKey}:${operation}` })).success) return failure("RATE_LIMITED", "Please try again later", 429, 60);
+    if (!(await env.AUTH_RATE_LIMIT.limit({ key: `${ipKey}:${operation}` })).success) return authFailure("RATE_LIMITED", "Please try again later", 429, 60);
     let data: Record<string, unknown> = {};
     let forwarded = request;
     if (request.method === "POST") {
         const raw = await readBounded(request, 16384);
-        if (raw === null) return failure("PAYLOAD_TOO_LARGE", "Request exceeds limit", 413);
+        if (raw === null) return authFailure("PAYLOAD_TOO_LARGE", "Request exceeds limit", 413);
         try {
             const input: unknown = JSON.parse(raw || "{}");
-            if (!input || typeof input !== "object" || Array.isArray(input)) return failure("INVALID_JSON", "Object required", 400);
+            if (!input || typeof input !== "object" || Array.isArray(input)) return authFailure("INVALID_JSON", "Object required", 400);
             data = input as Record<string, unknown>;
-        } catch { return failure("INVALID_JSON", "Invalid JSON", 400); }
+        } catch { return authFailure("INVALID_JSON", "Invalid JSON", 400); }
         if (TOKEN_PATHS.has(path)) {
             if (path !== "/sign-in/email" && !await accountEmailsEnabled(env)) {
-                return failure("FEATURE_PAUSED", "Account email operations are temporarily paused", 503);
+                return authFailure("FEATURE_PAUSED", "Account email operations are temporarily paused", 503);
             }
-            if (!await verifyTurnstile(env, request, request.headers.get("x-turnstile-token") ?? data.turnstileToken)) return failure("CHALLENGE_FAILED", "Verification failed", 403);
+            if (!await verifyTurnstile(env, request, request.headers.get("x-turnstile-token") ?? data.turnstileToken)) return authFailure("CHALLENGE_FAILED", "Verification failed", 403);
             if (typeof data.email === "string") {
                 const emailKey = await digestKey(data.email.trim().toLowerCase());
                 const limit = await reserve(env, `auth:${crypto.randomUUID()}`, [
@@ -141,7 +141,7 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
                     { key: `auth:account:${emailKey}`, limit: 5, windowSeconds: 60 },
                     { key: `auth:account:hour:${emailKey}`, limit: 20, windowSeconds: 3600 },
                 ]);
-                if (!limit.allowed) return failure("RATE_LIMITED", "Please try again later", 429, limit.retryAfter);
+                if (!limit.allowed) return authFailure("RATE_LIMITED", "Please try again later", 429, limit.retryAfter);
             }
         }
         // Admin sessions must prove MFA on this session; no trusted-device shortcut.
@@ -154,7 +154,7 @@ export async function handleAuth(request: Request, env: SupportEnv): Promise<Res
     const auth = createAuth(env);
     if (path === "/two-factor/disable") {
         const current = await getSessionUser(auth, env, request.headers);
-        if (current?.role === "admin") return failure("ADMIN_MFA_REQUIRED", "Administrators cannot disable MFA", 403);
+        if (current?.role === "admin") return authFailure("ADMIN_MFA_REQUIRED", "Administrators cannot disable MFA", 403);
     }
     const beforeVerification = MFA_PATHS.has(path) ? await auth.api.getSession({ headers: request.headers }) : null;
     const result = await auth.handler(forwarded);
