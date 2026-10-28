@@ -8,6 +8,10 @@ const sha = "a".repeat(40);
 const target = { environment: "test", branch: "test", accountId: "test-account", pagesProject: "test-vrclearn-store", origin: "https://test-store.example.com", mediaOrigin: "https://test-media.example.com" };
 const redirect = () => new Response(null, { status: 302, headers: { location: "https://example.cloudflareaccess.com/login" } });
 const config = () => Response.json({ releaseSha: sha, deploymentEnvironment: "test" });
+function isEndpoint(value: string, origin: string, pathname: string) {
+    const url = new URL(value);
+    return url.origin === origin && url.pathname === pathname;
+}
 function fixture(transport: (url: string, options: RequestInit) => Promise<Response>) {
     const fetch = vi.fn(transport), sleep = vi.fn(async (_milliseconds: number) => {});
     const api = vi.fn(async () => ({ url: "https://12345678.test-vrclearn-store.pages.dev" }));
@@ -26,7 +30,7 @@ describe("bounded smoke GET retries", () => {
     it("shares the three-attempt limit between transport errors and 5xx", async () => {
         let siteAttempts = 0;
         const test = fixture(async (url, options) => {
-            if (url.endsWith("/en") && url.startsWith(target.origin)) {
+            if (isEndpoint(url, target.origin, "/en")) {
                 siteAttempts++;
                 if (siteAttempts === 1) throw new TypeError("connection reset");
                 if (siteAttempts === 2) return new Response(null, { status: 503 });
@@ -53,11 +57,21 @@ describe("bounded smoke GET retries", () => {
     });
     it("uses fixed target labels for default-host transport failure", async () => {
         const test = fixture(async (url) => {
-            if (url.startsWith("https://test-vrclearn-store.pages.dev")) throw new TypeError("private transport response");
+            if (isEndpoint(url, "https://test-vrclearn-store.pages.dev", "/en")) throw new TypeError("private transport response");
             return redirect();
         });
         await expect(test.run()).rejects.toThrow(/^SMOKE_DEFAULT_TRANSPORT_FAILED$/);
-        expect(test.fetch.mock.calls.filter(([url]) => url.startsWith("https://test-vrclearn-store.pages.dev"))).toHaveLength(3);
+        expect(test.fetch.mock.calls.filter(([url]) => isEndpoint(url, "https://test-vrclearn-store.pages.dev", "/en"))).toHaveLength(3);
+    });
+    it("limits fixture routing to the exact endpoint origin and path", () => {
+        const origin = "https://test-vrclearn-store.pages.dev";
+        expect(isEndpoint(`${origin}/en`, origin, "/en")).toBe(true);
+        for (const url of [
+            "https://test-vrclearn-store.pages.dev.attacker.example/en",
+            "https://test-vrclearn-store.pages.dev@attacker.example/en",
+            "https://test-vrclearn-store.pages.dev/en/other",
+            "http://test-vrclearn-store.pages.dev/en",
+        ]) expect(isEndpoint(url, origin, "/en")).toBe(false);
     });
     it("retries an authenticated response-body connection failure", async () => {
         let authenticatedAttempts = 0;
