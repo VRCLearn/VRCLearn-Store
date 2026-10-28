@@ -19,7 +19,10 @@ if (support.workers_dev !== false || support.preview_urls !== false || support.r
 if (!edgeId(support.vars.CF_ACCOUNT_ID) || !edgeId(support.vars.CF_ZONE_ID)) errors.push("Configure the monitored account and emergency zone IDs");
 if (!edgeId(support.vars.EDGE_RULESET_ID) || !edgeId(support.vars.EDGE_RULE_ID) || !edgeId(support.vars.EDGE_MEDIA_RULE_ID)
     || support.vars.EDGE_RULE_ID === support.vars.EDGE_MEDIA_RULE_ID) errors.push("Configure distinct pre-created dynamic and media emergency edge rule IDs");
-if (!support.vars.ALERT_EMAIL) errors.push("Configure an operations alert mailbox");
+for (const name of ["BETTER_AUTH_SECRET", "TURNSTILE_SECRET_KEY", "CF_MONITOR_TOKEN", "CF_API_TOKEN", "ALERT_EMAIL"]) {
+    if (!Array.isArray(support.secrets?.required) || !support.secrets.required.includes(name)) errors.push(`Declare ${name} as a required Support secret`);
+}
+if (Object.hasOwn(support.vars, "ALERT_EMAIL")) errors.push("Keep the operations alert mailbox in an ALERT_EMAIL secret rather than public variables");
 if (policies.mediaAccess?.action !== "block" || policies.mediaAccess?.enabled !== true) errors.push("Media-region enforcement policy is missing");
 for (const name of ["emergencyDynamicStop", "emergencyMediaStop"]) {
     if (policies[name]?.action !== "block" || policies[name]?.enabled !== false) errors.push(`Pre-create a disabled ${name} policy`);

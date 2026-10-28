@@ -33,14 +33,18 @@ npm.cmd run test:browser
 
 商品和店铺详情在源 HTML 中输出内容与元数据，客户端沿用同一份初始数据。服务端按大陆 CN／其他地区过滤；界面语言不会改变商品区。动态 HTML 只在应用控制的地区缓存键下缓存，对外响应不允许共享代理缓存。
 
+首次发布按区独立生效；内容修订须通过所有当前上架地区的审核后统一替换，新申请地区待审或拒绝不会额外阻止已有地区的换版。同内容首次申请新区可复用已发布修订；已作出最终决定的地区重新申请时，先保存新修订，保留原决定。部分上架后撤回未决审核、下架或撤权不会撤销其他仍有效的地区。
+
+当前账户使用邮箱与密码登录，仅设置昵称／显示名，不设置 username。Better Auth 的 `name` 字段保存昵称，不作为登录标识；内部账户 ID 独立于登录方式。后续对接 HopeWriteDream 账号体系，本期不实现统一登录迁移。
+
 按钮、菜单、选择器、筛选项、标签页、卡片、徽标、对话框、滑块和表单直接使用 Material Web（卡片与徽标使用依赖中的 labs 组件）；自定义 CSS 仅负责布局、主题 token 与库中没有提供的内容。外观设置支持系统／浅色／深色、主题色 HEX、HCT 调整和九种配色风格，通过官方 Material Color Utilities 生成完整主题并在本机保存。`generate:theme` 在开发和构建前生成默认配色，不依赖远程字体或图标服务。
 
-## 配置与上线边界
+## 配置与内部测试
 
-当前配置包含**未创建资源的占位 ID**。必须为此项目单独配置 D1、两个 R2 桶、KV、辅助 Worker、Turnstile 与 secrets，不能复用其他项目的数据库。生产部署前见 [运维说明](docs/operations.md)、[费用与容量](docs/costs.md) 和 [辅助 Worker](worker/README.md)。
+内部测试版入口为 [store.vrclearn.com](https://store.vrclearn.com)。Access 保护正式站点、媒体以及默认和预览 Pages 入口，仅允许 `@vrclearn.com` 邮箱域；同时提供新邮箱一次性验证码（OTP）和现有 Cloudflare 登录。邮箱 OTP 已实际验证可用，Cloudflare 登录来源另外受其账户成员限制。Access 准入不授予商店账户或管理权限。商店使用专用 D1、两个 R2 桶、KV、辅助 Worker、Turnstile 和秘密绑定；实际资源 ID 已填入配置，秘密不进入仓库。
 
-`npm.cmd run preflight` 检查占位 ID 和入口约束；当前会按预期失败，防止把未完成配置误认为可直接上线。`deployment/edge-policies.json` 提供待应用的媒体分区和紧急规则表达式。
+`npm.cmd run preflight` 检查资源引用和入口约束，当前配置已通过。`deployment/edge-policies.json` 记录已应用的媒体分区、缓存与预置紧急规则；两条紧急封锁规则正常时保持禁用。预检不能代替远端验收，也不授权部署。
 
-2026-10-26 已通过 `cf` CLI 只读确认账户具备 Workers Paid、R2、有效的 `vrclearn.com` zone，以及已启用的该域发信能力；尚未为商店创建 Pages、D1 或 R2 资源，也未部署。仓库配置中的账户、zone 与资源 ID 均为待填写值，本地 CLI 缓存不纳入版本控制。
+Pages 从 Cloudflare 原生连接本仓库，生产分支为 `main`；使用 `.node-version`、锁文件和 `npm ci && npm test && npm run build && npm run preflight` 构建到 `dist`，不配置 GitHub Actions，不从含未提交改动的本地工作区部署。分支预览自动部署关闭。资源管理优先使用 `cf`；辅助 Worker 的独立发布与 Secret 注入见 [运维说明](docs/operations.md)。本地 CLI 缓存、凭据和验收产物不纳入版本控制。
 
-**当前外部限制：** Cloudflare 账户成本接口返回 403。费用读取代码遇到无权限、缺失产品覆盖、数据过期或截断时会保持受限，不能将自动美元监控视为已验证可用。详见费用文档。
+自动费用监控已通过真实 Cron 验证 V1 账户账单来源，并在人工确认后恢复正常。验收采样估算的 5 美元为 Workers Paid 基础费预留，已返回计费行的累计按量费用为零；费用接口按日更新，保护机制不构成账单硬上限。完整验收范围与未验证项见 [费用与容量](docs/costs.md)、[运维说明](docs/operations.md) 和 [辅助 Worker](worker/README.md)。
