@@ -11,6 +11,7 @@ export interface BudgetState {
     estimatedUsd?: number;
     source: "billable-usage";
     coverage: string[];
+    coverageBasis?: "provider-account";
     sourceUpdatedAt?: string;
     edgeBlocked?: boolean;
     edgeDynamicBlocked?: boolean;
@@ -30,8 +31,15 @@ interface UsageRow {
     x_BillableMetricId?: string;
 }
 const RANK: Record<BudgetMode, number> = { normal: 0, restricted: 1, maintenance: 2 };
-const REQUIRED_COVERAGE = ["workers", "pages", "d1", "r2", "durable-objects", "email", "logs", "kv"];
+const OBSERVED_FAMILIES = ["workers", "pages", "d1", "r2", "durable-objects", "email", "logs", "kv"];
 const MAX_SOURCE_AGE = 36 * 3_600_000;
+
+interface UsageEstimate {
+    estimatedUsd: number;
+    coverage: string[];
+    coverageBasis: "provider-account";
+    sourceUpdatedAt: string;
+}
 
 function record(value: unknown): value is Record<string, unknown> {
     return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -45,7 +53,8 @@ function savedBudgetState(value: unknown, now: number): value is BudgetState {
     return record(value) && isBudgetMode(value.mode) && typeof value.reason === "string"
         && Number.isFinite(timestamp(value.updatedAt)) && timestamp(value.updatedAt) <= now + 60_000
         && value.source === "billable-usage" && Array.isArray(value.coverage)
-        && value.coverage.every((family) => typeof family === "string" && REQUIRED_COVERAGE.includes(family))
+        && value.coverage.every((family) => typeof family === "string" && OBSERVED_FAMILIES.includes(family))
+        && (value.coverageBasis === undefined || value.coverageBasis === "provider-account")
         && (value.estimatedUsd === undefined || (typeof value.estimatedUsd === "number" && Number.isFinite(value.estimatedUsd) && value.estimatedUsd >= 0));
 }
 
@@ -56,6 +65,7 @@ function cycleBoundary(anchor: Date, year: number, month: number): number {
 
 function billingPeriods(info: unknown, now: number): Map<string, { start: number; end: number }> {
     if (!record(info) || info.success !== true || !record(info.result) || info.result.covered !== true
+        || (info.errors !== undefined && (!Array.isArray(info.errors) || info.errors.length !== 0))
         || !Array.isArray(info.result.subscriptions) || !info.result.subscriptions.length || info.result.subscriptions.length > 1000) throw new Error("USAGE_INFO_INVALID");
     const periods = new Map<string, { start: number; end: number }>();
     const subscriptionIds = new Set<string>();
@@ -82,6 +92,18 @@ function billingPeriods(info: unknown, now: number): Map<string, { start: number
     return periods;
 }
 
+export function billingUsageWindow(info: unknown, now: number): URLSearchParams {
+    const periods = billingPeriods(info, now);
+    const firstStart = Math.min(...Array.from(periods.values(), (period) => period.start));
+    const today = new Date(now);
+    // V1's default window spans billing cycles. Explicit dates must include every
+    // current subscription anchor; the estimator still rejects any foreign cycle.
+    return new URLSearchParams({
+        from: new Date(firstStart).toISOString().slice(0, 10),
+        to: new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1)).toISOString().slice(0, 10),
+    });
+}
+
 function serviceCoverage(row: Partial<UsageRow>): string[] {
     const label = `${row.ServiceFamilyName ?? ""} ${row.ServiceName ?? ""} ${row.ChargeDescription ?? ""}`.toLowerCase();
     const coverage: string[] = [];
@@ -95,13 +117,15 @@ function serviceCoverage(row: Partial<UsageRow>): string[] {
     return coverage;
 }
 
-export function estimateUsage(value: unknown, now: number, info: unknown): Pick<BudgetState, "estimatedUsd" | "coverage" | "sourceUpdatedAt"> {
+export function estimateUsage(value: unknown, now: number, info: unknown): UsageEstimate {
     const periods = billingPeriods(info, now);
-    if (!value || typeof value !== "object" || !("success" in value) || value.success !== true || !("result" in value) || !Array.isArray(value.result)
-        || value.result.length < 1 || value.result.length > 5000) throw new Error("USAGE_DATA_INVALID");
+    if (!record(value) || value.success !== true || !Array.isArray(value.result)
+        || value.result.length < 1 || value.result.length > 5000
+        || (value.errors !== undefined && (!Array.isArray(value.errors) || value.errors.length !== 0))) throw new Error("USAGE_DATA_INVALID");
     if ("result_info" in value) {
-        const info = value.result_info as { total_count?: number; total_pages?: number };
-        if (typeof info.total_count !== "number" || info.total_count !== value.result.length || (info.total_pages ?? 1) !== 1) throw new Error("USAGE_DATA_TRUNCATED");
+        const info = value.result_info;
+        if (!record(info) || typeof info.total_count !== "number" || info.total_count !== value.result.length
+            || (info.total_pages ?? 1) !== 1 || (info.page ?? 1) !== 1 || (info.count ?? value.result.length) !== value.result.length) throw new Error("USAGE_DATA_TRUNCATED");
     }
     const costs = new Map<string, { cost: number; newest: number }>();
     const families = new Set<string>();
@@ -127,26 +151,27 @@ export function estimateUsage(value: unknown, now: number, info: unknown): Pick<
         costs.set(key, { cost: Math.max(previous?.cost ?? 0, row.CumulatedContractedCost), newest: Math.max(previous?.newest ?? 0, end) });
         for (const family of serviceCoverage(row)) families.add(family);
     }
-    // Missing rows may mean zero usage, unavailable product coverage, or an incomplete
-    // feed. Without a complete source we cannot safely distinguish these cases.
-    if (REQUIRED_COVERAGE.some((family) => !families.has(family))) throw new Error("USAGE_COVERAGE_INCOMPLETE");
+    // Cloudflare documents V1 as covering every usage-based product on a covered
+    // account. A complete current-cycle response is the account-level authority;
+    // the observed families below do not claim that absent products had zero usage.
+    // https://blog.cloudflare.com/billable-usage-api/
     // This API currently updates daily; older values cannot authorize normal operation.
     const oldestMetric = Math.min(...Array.from(costs.values(), (metric) => metric.newest));
     if (now - oldestMetric > MAX_SOURCE_AGE) throw new Error("USAGE_DATA_STALE");
     // Usage API excludes recurring subscriptions. Reserve $5 for Workers Paid.
     const estimatedUsd = Math.ceil((5 + Array.from(costs.values()).reduce((sum, metric) => sum + metric.cost, 0)) * 100) / 100;
     if (!Number.isFinite(estimatedUsd)) throw new Error("USAGE_DATA_INVALID");
-    return { estimatedUsd, coverage: Array.from(families).sort(), sourceUpdatedAt: new Date(oldestMetric).toISOString() };
+    return { estimatedUsd, coverage: Array.from(families).sort(), coverageBasis: "provider-account", sourceUpdatedAt: new Date(oldestMetric).toISOString() };
 }
 
-export function nextBudgetState(previous: BudgetState | null, estimate: Pick<BudgetState, "estimatedUsd" | "coverage" | "sourceUpdatedAt"> | null, now: number): BudgetState {
+export function nextBudgetState(previous: BudgetState | null, estimate: UsageEstimate | null, now: number): BudgetState {
     let mode: BudgetMode = !estimate ? "restricted" : (estimate.estimatedUsd ?? 0) >= 18 ? "maintenance" : (estimate.estimatedUsd ?? 0) >= 15 ? "restricted" : "normal";
     let reason = !estimate ? "usage_source_unavailable" : (estimate.estimatedUsd ?? 0) >= 18 ? "budget_stop" : (estimate.estimatedUsd ?? 0) >= 15 ? "budget_restricted" : (estimate.estimatedUsd ?? 0) >= 10 ? "budget_warning" : "within_budget";
     if (previous && RANK[previous.mode] > RANK[mode]) { mode = previous.mode; reason = "manual_recovery_required"; }
     return {
         mode, reason, updatedAt: new Date(now).toISOString(), source: "billable-usage",
         estimatedUsd: estimate?.estimatedUsd ?? previous?.estimatedUsd,
-        coverage: estimate?.coverage ?? [], sourceUpdatedAt: estimate?.sourceUpdatedAt,
+        coverage: estimate?.coverage ?? [], coverageBasis: estimate?.coverageBasis, sourceUpdatedAt: estimate?.sourceUpdatedAt,
     };
 }
 
@@ -154,7 +179,7 @@ async function cloudflareJson(url: string, token: string, init: RequestInit = {}
     const headers = new Headers(init.headers);
     headers.set("Authorization", `Bearer ${token}`);
     headers.set("Content-Type", "application/json");
-    const response = await fetch(url, { ...init, headers, redirect: "error", signal: AbortSignal.timeout(10_000) });
+    const response = await fetch(url, { ...init, headers, redirect: "manual", signal: AbortSignal.timeout(10_000) });
     if (!response.ok) throw new Error("CLOUDFLARE_API_UNAVAILABLE");
     const raw = await readBounded(response, 2 * 1024 * 1024);
     if (raw === null) throw new Error("CLOUDFLARE_RESPONSE_TOO_LARGE");
@@ -175,7 +200,16 @@ export function mediaBlockExpression(origin: string): string {
 }
 
 interface EdgeStop { dynamic: boolean; media: boolean }
-interface EdgeRule { id: string; action: string; expression: string; enabled?: boolean }
+interface EdgeRule {
+    id: string;
+    action: string;
+    expression: string;
+    enabled?: boolean;
+    description?: string;
+    ref?: string;
+    bare: boolean;
+}
+const BARE_RULE_FIELDS = new Set(["id", "action", "expression", "enabled", "description", "ref", "version", "last_updated"]);
 
 function entrypointRules(value: unknown, id: string): EdgeRule[] | null {
     if (!record(value) || value.success !== true || !record(value.result) || value.result.id !== id
@@ -183,8 +217,13 @@ function entrypointRules(value: unknown, id: string): EdgeRule[] | null {
     const rules: EdgeRule[] = [];
     for (const rule of value.result.rules) {
         if (!record(rule) || typeof rule.id !== "string" || typeof rule.action !== "string" || typeof rule.expression !== "string"
-            || (rule.enabled !== undefined && typeof rule.enabled !== "boolean")) return null;
-        rules.push({ id: rule.id, action: rule.action, expression: rule.expression, enabled: rule.enabled });
+            || (rule.enabled !== undefined && typeof rule.enabled !== "boolean")
+            || ["description", "ref", "version", "last_updated"].some((field) => rule[field] !== undefined && typeof rule[field] !== "string")) return null;
+        rules.push({
+            id: rule.id, action: rule.action, expression: rule.expression, enabled: rule.enabled,
+            description: rule.description as string | undefined, ref: rule.ref as string | undefined,
+            bare: Object.keys(rule).every((field) => BARE_RULE_FIELDS.has(field)),
+        });
     }
     if (new Set(rules.map((rule) => rule.id)).size !== rules.length) return null;
     return rules;
@@ -195,7 +234,7 @@ function matchingRule(rules: EdgeRule[], id: string, expression: string): EdgeRu
     const rule = rules[index];
     // A prior skip may bypass every subsequent custom rule. Do not report a stop
     // as effective or rearrange rules that the operator has not approved.
-    if (!rule || rule.action !== "block" || rule.expression !== expression || rules.slice(0, index).some((entry) => entry.action === "skip" && entry.enabled !== false)) return undefined;
+    if (!rule || !rule.bare || rule.action !== "block" || rule.expression !== expression || rules.slice(0, index).some((entry) => entry.action === "skip" && entry.enabled !== false)) return undefined;
     return rule;
 }
 
@@ -225,7 +264,11 @@ async function activateEdgeStop(env: SupportEnv): Promise<EdgeStop> {
         if (rule.enabled === true) { stopped[target.key] = true; continue; }
         attempted = true;
         try {
-            await cloudflareJson(`${base}/${env.EDGE_RULESET_ID}/rules/${target.id}`, env.CF_API_TOKEN, { method: "PATCH", body: JSON.stringify({ enabled: true }) });
+            // Rulesets PATCH replaces the definition. Preserve the verified bare
+            // block rule and its metadata, changing only enabled; never send position.
+            await cloudflareJson(`${base}/${env.EDGE_RULESET_ID}/rules/${target.id}`, env.CF_API_TOKEN, {
+                method: "PATCH", body: JSON.stringify({ action: "block", enabled: true, expression: rule.expression, description: rule.description, ref: rule.ref }),
+            });
         } catch { /* A failed/uncertain write must not prevent the other stop. */ }
     }
     if (attempted) {
@@ -269,7 +312,9 @@ export async function runMonitor(env: SupportEnv): Promise<BudgetState> {
         if (!env.CF_MONITOR_TOKEN || !/^[a-f0-9]{32}$/.test(env.CF_ACCOUNT_ID)) throw new Error("MONITOR_NOT_CONFIGURED");
         const base = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/billable-usage`;
         const info = await cloudflareJson(`${base}/info`, env.CF_MONITOR_TOKEN);
-        estimate = estimateUsage(await cloudflareJson(base, env.CF_MONITOR_TOKEN), Date.now(), info);
+        const queriedAt = Date.now();
+        const window = billingUsageWindow(info, queriedAt);
+        estimate = estimateUsage(await cloudflareJson(`${base}?${window}`, env.CF_MONITOR_TOKEN), queriedAt, info);
     } catch { /* Missing or unverified cost data must never be treated as zero usage. */ }
     const next = nextBudgetState(previous, estimate, Date.now());
     const failState = () => { next.mode = "maintenance"; next.reason = "budget_state_unavailable"; };

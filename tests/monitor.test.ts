@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { dynamicBlockExpression, estimateUsage, mediaBlockExpression, nextBudgetState, runMonitor, type BudgetState } from "../worker/monitor";
+import { billingUsageWindow, dynamicBlockExpression, estimateUsage, mediaBlockExpression, nextBudgetState, runMonitor, type BudgetState } from "../worker/monitor";
 import type { SupportEnv } from "../worker/env";
 
 const now = Date.parse("2026-10-26T12:00:00Z");
@@ -42,7 +42,8 @@ function usageInfo(anchor = "2026-09-01T00:00:00Z") {
 function budget(mode: BudgetState["mode"], estimatedUsd = 5): BudgetState {
     return { mode, estimatedUsd, reason: "within_budget", updatedAt: new Date(now).toISOString(), source: "billable-usage", coverage: [] };
 }
-interface Rule { id: string; action: string; expression: string; enabled: boolean }
+interface Rule { id: string; action: string; expression: string; enabled: boolean; description?: string; ref?: string }
+interface RuleDefinition { action: string; expression: string; enabled?: boolean; description?: string; ref?: string }
 function fixture(cost = 13) {
     const state = new Map<string, string>();
     const get = vi.fn(async (key: string) => {
@@ -62,25 +63,37 @@ function fixture(cost = 13) {
         EMAIL: Object.assign({} as SendEmail, { send }),
     });
     const rules: Rule[] = [
-        { id: dynamicId, action: "block", expression: dynamicBlockExpression(env.ORIGIN), enabled: false },
-        { id: mediaId, action: "block", expression: mediaBlockExpression(env.MEDIA_ORIGIN), enabled: false },
+        { id: dynamicId, action: "block", expression: dynamicBlockExpression(env.ORIGIN), enabled: false, description: "Store dynamic emergency stop", ref: "store_dynamic_stop" },
+        { id: mediaId, action: "block", expression: mediaBlockExpression(env.MEDIA_ORIGIN), enabled: false, description: "Store media emergency stop", ref: "store_media_stop" },
     ];
     const document = () => ({ success: true, result: { id: rulesetId, kind: "zone", phase: "http_request_firewall_custom", rules } });
     const info = vi.fn(async () => Response.json(usageInfo()));
     const data = vi.fn(async () => Response.json(usage(cost)));
     const edgeRead = vi.fn(async () => Response.json(document()));
-    const edgePatch = vi.fn(async (id: string) => {
+    const edgePatch = vi.fn(async (id: string, body: RuleDefinition) => {
         const rule = rules.find((entry) => entry.id === id);
         if (!rule) throw new Error("Unexpected rule mutation");
-        rule.enabled = true;
+        rule.action = body.action;
+        rule.expression = body.expression;
+        rule.enabled = body.enabled ?? true;
+        if (body.description === undefined) delete rule.description;
+        else rule.description = body.description;
+        if (body.ref === undefined) delete rule.ref;
+        else rule.ref = body.ref;
         return Response.json({ success: true });
     });
     const fetcher = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+        if (init?.redirect === "error") throw new TypeError("Workers does not implement redirect:error");
         const url = String(input);
         if (url === `${billingBase}/info`) return info();
-        if (url === billingBase) return data();
+        if (url.startsWith(`${billingBase}?`)) return data();
         if (url === entrypoint && (init?.method ?? "GET") === "GET") return edgeRead();
-        if (init?.method === "PATCH" && url.startsWith(`${rulesBase}/${rulesetId}/rules/`)) return edgePatch(url.split("/").at(-1)!);
+        if (init?.method === "PATCH" && url.startsWith(`${rulesBase}/${rulesetId}/rules/`)) {
+            const body = JSON.parse(String(init.body)) as RuleDefinition;
+            if (!body.action) return Response.json({ success: false, errors: [{ code: 20015, message: "action required to create or update rule" }] }, { status: 400 });
+            if (!body.expression) return Response.json({ success: false, errors: [{ message: "expression required to update rule definition" }] }, { status: 400 });
+            return edgePatch(url.split("/").at(-1)!, body);
+        }
         throw new Error(`Unexpected external request: ${url}`);
     });
     vi.stubGlobal("fetch", fetcher);
@@ -96,6 +109,20 @@ beforeEach(() => {
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("billing period and source validation", () => {
+    it("queries the current anchor through the next UTC day rather than V1's default multi-cycle range", () => {
+        expect(billingUsageWindow(usageInfo("2025-08-26T00:00:00Z"), now).toString()).toBe("from=2026-10-26&to=2026-10-27");
+        expect(billingUsageWindow(usageInfo("2025-08-26T00:00:00Z"), Date.parse("2026-11-01T00:30:00+09:00")).toString()).toBe("from=2026-10-26&to=2026-11-01");
+    });
+    it("includes all current subscription anchors in one bounded query", () => {
+        const info = usageInfo("2025-08-26T00:00:00Z");
+        info.result.subscriptions.push({ ...info.result.subscriptions[0], id: "subscription-two", billing_cycle_anchor_timestamp: "2025-08-09T06:00:00Z" });
+        expect(billingUsageWindow(info, now).toString()).toBe("from=2026-10-09&to=2026-10-27");
+    });
+    it("clamps the query's month-end anchor and advances the UTC year", () => {
+        const info = usageInfo("2025-01-31T06:00:00Z");
+        expect(billingUsageWindow(info, Date.parse("2028-03-01T12:00:00Z")).toString()).toBe("from=2028-02-29&to=2028-03-02");
+        expect(billingUsageWindow(info, Date.parse("2027-12-31T12:00:00Z")).toString()).toBe("from=2027-12-31&to=2028-01-01");
+    });
     it("counts cumulative daily rows once per metric and includes the recurring plan", () => {
         const data = usage(6);
         data.result.push({ ...data.result[0], CumulatedContractedCost: 4, ChargePeriodEnd: "2026-10-25T00:00:00Z" });
@@ -196,19 +223,40 @@ describe("billing period and source validation", () => {
         { success: true, result: { covered: true, subscriptions: [usageInfo().result.subscriptions[0], usageInfo().result.subscriptions[0]] } },
         usageInfo("not-a-date"),
         usageInfo("2026-11-01T00:00:00Z"),
+        { ...usageInfo(), errors: [{ message: "Coverage unavailable" }] },
     ])("rejects invalid or unverified coverage metadata %j", (info) => {
         expect(() => estimateUsage(usage(0), now, info)).toThrow("USAGE_INFO_INVALID");
     });
     it.each([null, { success: false }, { success: true, result: [] }])("rejects an absent costs feed %j", (data) => {
         expect(() => estimateUsage(data, now, usageInfo())).toThrow("USAGE_DATA_INVALID");
     });
-    it("rejects currency mismatches, incomplete coverage, invalid costs and truncated pages", () => {
+    it("accepts a covered account's complete current-period feed without inventing absent product rows", () => {
+        const data = usage(1);
+        data.result = data.result.filter((row) => row.ServiceName !== "Workers Logs");
+        const estimate = estimateUsage(data, now, usageInfo());
+        expect(estimate).toMatchObject({ estimatedUsd: 6, coverageBasis: "provider-account" });
+        expect(estimate.coverage).not.toContain("logs");
+        expect(nextBudgetState(null, estimate, now)).toMatchObject({ mode: "normal", coverageBasis: "provider-account" });
+    });
+    it("includes unknown service costs while reporting only recognized observed families", () => {
+        const data = usage(1);
+        data.result.push({ ...data.result[0], ServiceName: "Another metered product", ServiceFamilyName: "Another product", ChargeDescription: "Another metered product requests", CumulatedContractedCost: 14 });
+        const estimate = estimateUsage(data, now, usageInfo());
+        expect(estimate.estimatedUsd).toBe(20);
+        expect(nextBudgetState(null, estimate, now).mode).toBe("maintenance");
+        expect(estimate.coverage).not.toContain("Another product");
+    });
+    it("rejects currency mismatches, invalid costs and truncated pages", () => {
         const euro = usage(1); euro.result[0].BillingCurrency = "EUR";
         expect(() => estimateUsage(euro, now, usageInfo())).toThrow("USAGE_DATA_INVALID");
-        const incomplete = usage(1); incomplete.result.pop();
-        expect(() => estimateUsage(incomplete, now, usageInfo())).toThrow("USAGE_COVERAGE_INCOMPLETE");
         for (const cost of [-1, Infinity, NaN]) expect(() => estimateUsage(usage(cost), now, usageInfo())).toThrow("USAGE_DATA_INVALID");
         expect(() => estimateUsage({ ...usage(1), result_info: { total_count: 100, total_pages: 2 } }, now, usageInfo())).toThrow("USAGE_DATA_TRUNCATED");
+    });
+    it.each([null, {}, { total_count: 7, page: 2 }, { total_count: 7, count: 6 }, { total_count: 8 }, { total_count: 7, total_pages: 2 }])("rejects incomplete or inconsistent response pagination %j", (resultInfo) => {
+        expect(() => estimateUsage({ ...usage(0), result_info: resultInfo }, now, usageInfo())).toThrow("USAGE_DATA_TRUNCATED");
+    });
+    it.each([{ errors: [{ message: "Incomplete response" }] }, { errors: "invalid-errors" }])("rejects a contradictory success response with errors $errors", ({ errors }) => {
+        expect(() => estimateUsage({ ...usage(0), errors }, now, usageInfo())).toThrow("USAGE_DATA_INVALID");
     });
     it("rejects implausibly future charge periods", () => {
         expect(() => estimateUsage(usage(0, "2026-10-28T12:00:00Z"), now, usageInfo())).toThrow("USAGE_PERIOD_INVALID");
@@ -227,11 +275,12 @@ describe("monitor state transitions and bounded failures", () => {
         expect(result).toMatchObject({ mode, reason, estimatedUsd: cost + 5 });
         expect(f.info).toHaveBeenCalledTimes(1);
         expect(f.data).toHaveBeenCalledTimes(1);
+        expect(f.fetcher.mock.calls[1][0]).toBe(`${billingBase}?from=2026-10-01&to=2026-10-27`);
         expect(f.send).not.toHaveBeenCalled();
     });
     it("never automatically recovers an existing restricted or maintenance state", () => {
         for (const mode of ["restricted", "maintenance"] as const) {
-            expect(nextBudgetState(budget(mode), { estimatedUsd: 5, coverage: [] }, now)).toMatchObject({ mode, reason: "manual_recovery_required" });
+            expect(nextBudgetState(budget(mode), { estimatedUsd: 5, coverage: [], coverageBasis: "provider-account", sourceUpdatedAt: currentEnd }, now)).toMatchObject({ mode, reason: "manual_recovery_required" });
             expect(nextBudgetState(budget(mode), null, now).mode).toBe(mode);
         }
     });
@@ -250,6 +299,47 @@ describe("monitor state transitions and bounded failures", () => {
         f.data.mockImplementation(async () => new Response("Forbidden", { status: 403 }));
         expect((await runMonitor(f.env)).mode).toBe("restricted");
         expect(f.fetcher).toHaveBeenCalledTimes(2);
+    });
+    it.each(["info", "data"] as const)("fails closed without following a redirected %s source request", async (source) => {
+        const f = fixture(0);
+        const destination = "https://untrusted.example/collect";
+        f[source].mockImplementation(async () => Response.redirect(destination, 302));
+        expect(await runMonitor(f.env)).toMatchObject({ mode: "restricted", reason: "usage_source_unavailable" });
+        expect(f.fetcher).toHaveBeenCalledTimes(source === "info" ? 1 : 2);
+        for (const [input, init] of f.fetcher.mock.calls) {
+            expect(new URL(String(input)).origin).toBe("https://api.cloudflare.com");
+            expect(init?.redirect).toBe("manual");
+        }
+        expect(f.edgePatch).not.toHaveBeenCalled();
+    });
+    it("stops before requesting costs when account coverage metadata is unverified", async () => {
+        const f = fixture(0);
+        const info = usageInfo();
+        info.result.covered = false;
+        f.info.mockImplementation(async () => Response.json(info));
+        expect(await runMonitor(f.env)).toMatchObject({ mode: "restricted", reason: "usage_source_unavailable" });
+        expect(f.fetcher).toHaveBeenCalledTimes(1);
+        expect(f.data).not.toHaveBeenCalled();
+    });
+    it("persists the account coverage basis without claiming a Logs row was observed", async () => {
+        const f = fixture(0);
+        const data = usage(0);
+        data.result = data.result.filter((row) => row.ServiceName !== "Workers Logs");
+        f.data.mockImplementation(async () => Response.json(data));
+        expect(await runMonitor(f.env)).toMatchObject({ mode: "normal", estimatedUsd: 5, coverageBasis: "provider-account" });
+        const stored = JSON.parse(f.state.get("budget:state")!);
+        expect(stored.coverage).not.toContain("logs");
+        expect(stored.coverageBasis).toBe("provider-account");
+        f.info.mockImplementation(async () => new Response("Unavailable", { status: 503 }));
+        const failed = await runMonitor(f.env);
+        expect(failed).toMatchObject({ mode: "restricted", reason: "usage_source_unavailable", estimatedUsd: 5, coverage: [] });
+        expect(failed.coverageBasis).toBeUndefined();
+    });
+    it("rejects an unrecognized persisted coverage basis as malformed state", async () => {
+        const f = fixture(0);
+        f.state.set("budget:state", JSON.stringify({ ...budget("normal"), coverageBasis: "invented-product-zero" }));
+        expect(await runMonitor(f.env)).toMatchObject({ mode: "maintenance", reason: "budget_state_unavailable" });
+        expect(f.info).not.toHaveBeenCalled();
     });
     it.each(["ChargeDescription", "PricingUnit"] as const)("restricts rather than using an incomplete %s to authorize normal operation", async (field) => {
         const f = fixture(0);
@@ -272,7 +362,7 @@ describe("monitor state transitions and bounded failures", () => {
         expect(f.fetcher).toHaveBeenCalledTimes(1);
         const init = f.fetcher.mock.calls[0][1];
         expect(init?.signal).toBeInstanceOf(AbortSignal);
-        expect(init?.redirect).toBe("error");
+        expect(init?.redirect).toBe("manual");
     });
     it("sends only quota-approved alerts with the reserved operational limits", async () => {
         const f = fixture(5);
@@ -313,15 +403,61 @@ describe("monitor state transitions and bounded failures", () => {
 describe("emergency edge stops", () => {
     it("enables only the two preconfigured rules and verifies the active entry point", async () => {
         const f = fixture();
+        const original = structuredClone(f.rules);
         expect((await runMonitor(f.env)).edgeBlocked).toBe(true);
         expect(f.edgeRead).toHaveBeenCalledTimes(2);
         const mutations = f.fetcher.mock.calls.filter(([, init]) => init?.method === "PATCH");
         expect(mutations).toHaveLength(2);
-        for (const [, init] of mutations) {
-            expect(JSON.parse(String(init?.body))).toEqual({ enabled: true });
+        for (const [input, init] of mutations) {
+            const id = String(input).split("/").at(-1);
+            const rule = original.find((entry) => entry.id === id)!;
+            expect(JSON.parse(String(init?.body))).toEqual({ action: "block", enabled: true, expression: rule.expression, description: rule.description, ref: rule.ref });
             expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer test-rule-token");
         }
+        expect(f.rules).toEqual(original.map((rule) => ({ ...rule, enabled: true })));
+        for (const [input, init] of f.fetcher.mock.calls) {
+            expect(new URL(String(input)).origin).toBe("https://api.cloudflare.com");
+            expect(init?.redirect).toBe("manual");
+        }
         expect(JSON.parse(f.state.get("budget:state")!)).toMatchObject({ edgeBlocked: true });
+    });
+    it.each(["read", "write"] as const)("does not follow a redirected WAF %s request or report an unverified stop", async (stage) => {
+        const f = fixture();
+        const destination = "https://untrusted.example/collect";
+        if (stage === "read") f.edgeRead.mockImplementation(async () => Response.redirect(destination, 307));
+        else f.edgePatch.mockImplementation(async () => Response.redirect(destination, 307));
+        expect(await runMonitor(f.env)).toMatchObject({ mode: "maintenance", edgeBlocked: false });
+        expect(f.fetcher).toHaveBeenCalledTimes(stage === "read" ? 3 : 6);
+        for (const [input, init] of f.fetcher.mock.calls) {
+            expect(new URL(String(input)).origin).toBe("https://api.cloudflare.com");
+            expect(init?.redirect).toBe("manual");
+        }
+        if (stage === "read") expect(f.edgePatch).not.toHaveBeenCalled();
+        else expect(f.edgePatch).toHaveBeenCalledTimes(2);
+    });
+    it("preserves bare definitions without optional metadata and omits API-managed fields", async () => {
+        const f = fixture();
+        for (const rule of f.rules) {
+            delete rule.description;
+            delete rule.ref;
+            Object.assign(rule, { version: "1", last_updated: "2026-10-26T00:00:00Z" });
+        }
+        expect((await runMonitor(f.env)).edgeBlocked).toBe(true);
+        for (const [id, body] of f.edgePatch.mock.calls) {
+            expect(body).toEqual({ action: "block", enabled: true, expression: f.rules.find((rule) => rule.id === id)!.expression });
+        }
+    });
+    it.each(["action_parameters", "logging", "ratelimit", "exposed_credential_check", "categories"])("does not replace a dedicated stop definition with unexpected %s settings", async (field) => {
+        const f = fixture();
+        Object.assign(f.rules[0], { [field]: {} });
+        expect(await runMonitor(f.env)).toMatchObject({ edgeBlocked: false, edgeDynamicBlocked: false, edgeMediaBlocked: true });
+        expect(f.edgePatch.mock.calls.map(([id]) => id)).toEqual([mediaId]);
+    });
+    it.each(["description", "ref"])("rejects malformed %s metadata instead of dropping it", async (field) => {
+        const f = fixture();
+        Object.assign(f.rules[0], { [field]: { invalid: true } });
+        expect((await runMonitor(f.env)).edgeBlocked).toBe(false);
+        expect(f.edgePatch).not.toHaveBeenCalled();
     });
     it("does not mutate already enabled rules", async () => {
         const f = fixture();
@@ -395,7 +531,7 @@ describe("emergency edge stops", () => {
     });
     it.each(["token", "zone", "ruleset", "duplicate-ids"])("does not mutate rules with missing or invalid %s configuration", async (failure) => {
         const f = fixture();
-        if (failure === "token") f.env.CF_API_TOKEN = undefined;
+        if (failure === "token") Reflect.deleteProperty(f.env, "CF_API_TOKEN");
         if (failure === "zone") f.env.CF_ZONE_ID = "0".repeat(32);
         if (failure === "ruleset") f.env.EDGE_RULESET_ID = "";
         if (failure === "duplicate-ids") f.env.EDGE_MEDIA_RULE_ID = dynamicId;
