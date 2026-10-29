@@ -432,7 +432,7 @@ test("merchant sees the rejected region reason and saves a fresh revision before
 });
 
 for (const canRetry of [false, true]) {
-    test(`review desk ${canRetry ? "offers" : "hides"} a server-qualified partial publication retry`, async ({ page }) => {
+    test(`admin workspace ${canRetry ? "offers" : "hides"} a server-qualified partial publication retry`, async ({ page }) => {
         const t = messages("en");
         const revisionId = "00000000-0000-4000-8000-000000000022";
         const decisions: Record<string, unknown>[] = [];
@@ -572,7 +572,7 @@ test("Chinese registration submits a display nickname and shows an auth guard fa
 });
 
 for (const locale of ["zh-CN", "en", "ja"] as const) {
-    test(`password login opens the account and review desk in ${locale}`, async ({ page }) => {
+    test(`password login opens the account and admin workspace in ${locale}`, async ({ page }) => {
         const t = messages(locale);
         let signedIn = false;
         let signIn: Record<string, unknown> | undefined;
@@ -609,7 +609,7 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
 }
 
 for (const restricted of ["anonymous", "member", "banned"] as const) {
-    test(`review desk blocks ${restricted} accounts before loading the queue`, async ({ page }) => {
+    test(`admin workspace blocks ${restricted} accounts before loading the queue`, async ({ page }) => {
         let queueRequests = 0;
         await page.route("**/api/**", (route) => {
             const path = new URL(route.request().url()).pathname;

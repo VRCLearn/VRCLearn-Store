@@ -2,7 +2,7 @@
 
 ## Workers 与静态界面
 
-主 Worker 使用 Static Assets 分发 React、TypeScript 与 Material Web 界面。首页、搜索、收藏、账户、商家工作台、审核台及说明页生成真实静态 HTML；匹配的静态资源直接由资产服务响应。未使用全站服务端渲染或全站登录态检查，不轮询账户或搜索。
+主 Worker 使用 Static Assets 分发 React、TypeScript 与 Material Web 界面。首页、搜索、收藏、账户、商家工作台、管理工作台及说明页生成真实静态 HTML；匹配的静态资源直接由资产服务响应。未使用全站服务端渲染或全站登录态检查，不轮询账户或搜索。
 
 动态入口为 `/api/v1/*`、`/api/auth/*`、三语商品/店铺详情、`/sitemap.xml` 与 `/sitemaps/*`。路由清单由 `shared/routes.json` 统一提供，构建与运行时共用。详情 HTML 包含正文、分享元数据和结构化数据，API 与 HTML 共用业务服务层，不通过 HTTP 请求自己。
 
