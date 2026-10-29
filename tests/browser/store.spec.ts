@@ -137,11 +137,11 @@ test("Material search controls apply only requested filters and do not poll whil
     await expect(page.getByRole("heading", { name: "No matching products", exact: true })).toBeVisible();
 
     await page.getByRole("combobox", { name: "Platform", exact: true }).click();
-    await page.getByRole("option", { name: "Android", exact: true }).click();
+    await page.getByRole("option", { name: "iOS", exact: true }).click();
     expect(requests).toHaveLength(2);
     await page.getByRole("button", { name: "Apply filters", exact: true }).click();
     await expect.poll(() => requests.length).toBe(3);
-    expect(new URL(requests[2]).searchParams.get("platform")).toBe("android");
+    expect(new URL(requests[2]).searchParams.get("platform")).toBe("ios");
     await expect(page.getByRole("heading", { name: "No matching products", exact: true })).toBeVisible();
     await page.getByRole("button", { name: "Avatars", exact: true }).click();
     await expect.poll(() => requests.length).toBe(4);

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { CATEGORIES, LOCALES } from "../shared/contracts";
+import { CATEGORIES, LOCALES, PLATFORMS } from "../shared/contracts";
 import { isPublicHttps } from "./security";
 
 const text = (maximum: number) => z.string().trim().min(1).max(maximum);
@@ -10,7 +10,7 @@ export const productSchema = z.object({
     title: text(160), language: z.enum(LOCALES), summary: text(400), description: text(12000),
     category: z.enum(CATEGORIES), tags: z.array(text(40)).max(12).transform((items) => [...new Set(items)]),
     compatibleModels: z.array(text(100)).max(20).transform((items) => [...new Set(items)]),
-    platforms: z.array(z.enum(["pc", "android"])).min(1).max(2).transform((items) => [...new Set(items)]),
+    platforms: z.array(z.enum(PLATFORMS)).min(1).max(PLATFORMS.length).transform((items) => [...new Set(items)]),
     pricing: z.enum(["free", "paid"]), price: z.number().finite().min(0).max(100000000).nullable(),
     currency: z.string().regex(/^[A-Z]{3}$/).nullable(), purchaseUrl: https,
     mediaIds: z.array(z.string().uuid()).max(10).transform((items) => [...new Set(items)]), r18: z.boolean(),

@@ -1,6 +1,9 @@
 export type Region = "cn" | "intl";
 export type Locale = "en" | "zh-CN" | "ja";
 export type Category = "avatars" | "clothing" | "worlds" | "plugins" | "tools" | "services";
+export const PLATFORMS = ["pc", "android", "ios"] as const;
+export type Platform = typeof PLATFORMS[number];
+export const PLATFORM_LABELS: Record<Platform, string> = { pc: "PC", android: "Android", ios: "iOS" };
 export interface SessionUser {
     id: string;
     email: string;
@@ -17,7 +20,7 @@ export interface ProductInput {
     category: Category;
     tags: string[];
     compatibleModels: string[];
-    platforms: ("pc" | "android")[];
+    platforms: Platform[];
     pricing: "free" | "paid";
     price: number | null;
     currency: string | null;

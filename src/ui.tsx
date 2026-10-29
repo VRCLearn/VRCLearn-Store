@@ -1,6 +1,6 @@
 import { createContext, useContext, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import { Link } from "react-router";
-import type { Locale, Product, SessionUser } from "../shared/contracts";
+import { PLATFORM_LABELS, type Locale, type Product, type SessionUser } from "../shared/contracts";
 import { api, ApiError, localizedError } from "./api";
 import { messages, type MessageKey } from "./i18n";
 import { Card, Button, Icon, InteractionState, LinkButton, MaterialSelect, Spinner, type ButtonVariant } from "./material";
@@ -69,7 +69,7 @@ export function Price({ product }: { product: Pick<Product, "pricing" | "price" 
 
 export function ProductCard({ product }: { product: Product }) {
     const { t, path } = useLocale();
-    return <Card role="article" className="product-card"><Link className="product-image" to={path(`/products/${encodeURIComponent(product.id)}`)}><InteractionState />{product.images[0] ? <img src={product.images[0]} alt="" loading="lazy" width="640" height="480" /> : <span className="image-placeholder" aria-hidden="true"><Icon name={product.category} size={48} /></span>}<span className="category-pill">{t[product.category]}</span></Link><div className="product-card-body"><Link className="seller-link" to={path(`/shops/${encodeURIComponent(product.shopId)}`)}>{product.shopName}</Link><h3><Link to={path(`/products/${encodeURIComponent(product.id)}`)}>{product.title}</Link></h3>{product.r18 && <p>{t.adult}</p>}<p>{product.summary}</p><div className="product-card-bottom"><Price product={product} /><span className="platforms">{product.platforms.map((p) => p === "pc" ? "PC" : "Android").join(" · ")}</span></div></div></Card>;
+    return <Card role="article" className="product-card"><Link className="product-image" to={path(`/products/${encodeURIComponent(product.id)}`)}><InteractionState />{product.images[0] ? <img src={product.images[0]} alt="" loading="lazy" width="640" height="480" /> : <span className="image-placeholder" aria-hidden="true"><Icon name={product.category} size={48} /></span>}<span className="category-pill">{t[product.category]}</span></Link><div className="product-card-body"><Link className="seller-link" to={path(`/shops/${encodeURIComponent(product.shopId)}`)}>{product.shopName}</Link><h3><Link to={path(`/products/${encodeURIComponent(product.id)}`)}>{product.title}</Link></h3>{product.r18 && <p>{t.adult}</p>}<p>{product.summary}</p><div className="product-card-bottom"><Price product={product} /><span className="platforms">{product.platforms.map((platform) => PLATFORM_LABELS[platform]).join(" · ")}</span></div></div></Card>;
 }
 
 export async function currentUser(): Promise<SessionUser | null> {

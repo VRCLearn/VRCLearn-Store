@@ -56,6 +56,19 @@ describe("real SQLite publication and authorization integration", () => {
         const products = (result.data as { products: { id: string; canRetry: boolean; regions: { region: Region; status: string }[] }[] }).products;
         return products.find((item) => item.id === revisionId);
     }
+    it("publishes an iOS-only product and filters it independently from Android and PC", async () => {
+        await enroll();
+        const result = await api("merchant/products", "POST", { ...content, platforms: ["ios"] });
+        expect(result.status).toBe(201);
+        const product = result.data as { id: string; revisionId: string };
+        expect((await api(`merchant/products/${product.id}/submit`, "POST", { regions: ["intl"], turnstileToken: "test-token" })).status).toBe(200);
+        await decide(product.revisionId, "intl");
+        expect((await getProduct(edgeRequest("/", { country: "JP" }), fixture.env, product.id)).platforms).toEqual(["ios"]);
+        for (const platform of ["ios", "android", "pc"]) {
+            const result = await listProducts(edgeRequest(`/api/v1/products?platform=${platform}`, { country: "JP" }), fixture.env);
+            expect(result.items.map((item) => item.id)).toEqual(platform === "ios" ? [product.id] : []);
+        }
+    });
     it.each([{ regions: ["cn"] }, { regions: ["cn", "intl"] }] as { regions: Region[] }[])("rejects adult submissions to $regions before challenges, submission quota or review writes", async ({ regions }) => {
         await enroll();
         const created = await api("merchant/products", "POST", { ...content, r18: true });

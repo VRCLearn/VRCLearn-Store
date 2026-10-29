@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import type { ProductInput, Region, SessionUser, ShopInput } from "../shared/contracts";
+import { PLATFORM_LABELS, type ProductInput, type Region, type SessionUser, type ShopInput } from "../shared/contracts";
 import { api, send } from "./api";
 import { Card, Badge, Field, Icon, LinkButton, Tabs } from "./material";
 import { ActionButton, Busy, currentUser, Empty, Form, Markdown, Notice, Select, SignInPrompt, statusLabel, useAction, useLocale } from "./ui";
@@ -39,7 +39,7 @@ function RetryPublication({ id, regions, canRetry, onDone }: { id: string; regio
 
 function ProductReview({ content }: { content: ProductInput }) {
     const { t } = useLocale();
-    return <div className="review-content"><h3>{content.title}</h3>{content.r18 && <p>{t.adult}</p>}<p>{content.summary}</p><Markdown source={content.description} /><dl className="spec-list"><div><dt>{t.category}</dt><dd>{t[content.category]}</dd></div><div><dt>{t.sourceLanguage}</dt><dd>{content.language}</dd></div><div><dt>{t.tags}</dt><dd>{content.tags.join(", ")}</dd></div><div><dt>{t.models}</dt><dd>{content.compatibleModels.join(", ")}</dd></div><div><dt>{t.support}</dt><dd>{content.platforms.join(", ")}</dd></div><div><dt>{t.price}</dt><dd>{content.pricing === "free" ? t.free : `${content.currency} ${content.price}`}</dd></div><div><dt>{t.purchaseUrl}</dt><dd><a href={content.purchaseUrl} target="_blank" rel="noopener noreferrer nofollow">{content.purchaseUrl} ↗</a></dd></div></dl><div className="review-images">{content.mediaIds.map((id) => <a key={id} href={`/api/v1/merchant/media/${encodeURIComponent(id)}`} target="_blank" rel="noopener noreferrer"><img src={`/api/v1/merchant/media/${encodeURIComponent(id)}`} alt={t.privatePreview} loading="lazy" width="240" height="180" /></a>)}</div></div>;
+    return <div className="review-content"><h3>{content.title}</h3>{content.r18 && <p>{t.adult}</p>}<p>{content.summary}</p><Markdown source={content.description} /><dl className="spec-list"><div><dt>{t.category}</dt><dd>{t[content.category]}</dd></div><div><dt>{t.sourceLanguage}</dt><dd>{content.language}</dd></div><div><dt>{t.tags}</dt><dd>{content.tags.join(", ")}</dd></div><div><dt>{t.models}</dt><dd>{content.compatibleModels.join(", ")}</dd></div><div><dt>{t.support}</dt><dd>{content.platforms.map((platform) => PLATFORM_LABELS[platform]).join(", ")}</dd></div><div><dt>{t.price}</dt><dd>{content.pricing === "free" ? t.free : `${content.currency} ${content.price}`}</dd></div><div><dt>{t.purchaseUrl}</dt><dd><a href={content.purchaseUrl} target="_blank" rel="noopener noreferrer nofollow">{content.purchaseUrl} ↗</a></dd></div></dl><div className="review-images">{content.mediaIds.map((id) => <a key={id} href={`/api/v1/merchant/media/${encodeURIComponent(id)}`} target="_blank" rel="noopener noreferrer"><img src={`/api/v1/merchant/media/${encodeURIComponent(id)}`} alt={t.privatePreview} loading="lazy" width="240" height="180" /></a>)}</div></div>;
 }
 
 function Moderation({ onDone }: { onDone: () => Promise<void> }) {
