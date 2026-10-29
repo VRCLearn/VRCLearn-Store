@@ -69,7 +69,7 @@ test("static storefront uses Material menus and preserves a customized theme wit
     await dialog.getByRole("textbox", { name: "Color value", exact: true }).fill("#22aa66");
     await expect(page.locator("html")).toHaveAttribute("data-theme-source", "#22aa66");
     await expectThemedScrollbar(page);
-    await dialog.getByRole("combobox", { name: "Color style", exact: true }).click();
+    await dialog.getByRole("combobox", { name: "Color scheme", exact: true }).click();
     await page.getByRole("option", { name: "Expressive", exact: true }).click();
     await expect(page.locator("html")).toHaveAttribute("data-theme-scheme", "expressive");
     await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem("store-appearance") ?? "{}").source)).toBe("#22aa66");
@@ -98,7 +98,12 @@ test("static storefront uses Material menus and preserves a customized theme wit
     await expect(dialog).not.toBeVisible();
 
     await page.getByRole("button", { name: "Language", exact: true }).press("ArrowDown");
-    await page.getByRole("menuitem", { name: "简体中文", exact: true }).click();
+    // Material hides the menu from accessibility before its closing animation
+    // finishes. Wait for its public completion event before opening it again.
+    await Promise.all([
+        page.locator("header md-menu").first().evaluate((menu) => new Promise<void>((resolve) => menu.addEventListener("closed", () => resolve(), { once: true }))),
+        page.getByRole("menuitem", { name: "简体中文", exact: true }).click(),
+    ]);
     await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
     await expect(page.getByRole("menu", { name: "语言", exact: true })).not.toBeVisible();
     await page.getByRole("button", { name: "语言", exact: true }).click();

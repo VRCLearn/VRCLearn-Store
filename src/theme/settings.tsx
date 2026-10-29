@@ -10,18 +10,22 @@ import { DEFAULT_THEME, isThemeScheme, normalizeHex, THEME_SCHEMES, type ThemeMo
 import { useStoreTheme } from "./provider";
 import "./theme.css";
 
+// Canonical English names for the Material Color Utilities variants.
+// https://github.com/material-foundation/material-color-utilities/blob/main/dev_guide/creating_color_scheme.md
+const schemeNames = ["Tonal Spot", "Fidelity", "Monochrome", "Neutral", "Vibrant", "Expressive", "Content", "Rainbow", "Fruit Salad"];
+
 const copy = {
     en: {
-        title: "Appearance", introduction: "Choose a color and make the store feel like yours.", mode: "Display mode", system: "Use device setting", light: "Light", dark: "Dark", color: "Theme color", chooseColor: "Choose theme color", hex: "Color value", hexHint: "For example, #6cb6ff", invalidColor: "Enter a six-digit color such as #6cb6ff.", scheme: "Color style", precise: "Fine-tune color", hue: "Hue", chroma: "Colorfulness", tone: "Lightness", reset: "Reset appearance", done: "Done",
-        schemes: ["Soft", "True to color", "Monochrome", "Neutral", "Vibrant", "Expressive", "Content", "Rainbow", "Fruit salad"]
+        title: "Appearance", introduction: "Choose a color and make the store feel like yours.", mode: "Display mode", system: "Use device setting", light: "Light", dark: "Dark", color: "Theme color", chooseColor: "Choose theme color", hex: "Color value", hexHint: "For example, #6cb6ff", invalidColor: "Enter a six-digit color such as #6cb6ff.", scheme: "Color scheme", precise: "Fine-tune color", hue: "Hue", chroma: "Chroma", tone: "Tone", reset: "Reset appearance", done: "Done",
+        schemes: schemeNames
     },
     "zh-CN": {
-        title: "外观", introduction: "选择喜欢的颜色，让商店更合你的心意。", mode: "显示模式", system: "跟随系统", light: "浅色", dark: "深色", color: "主题颜色", chooseColor: "选择主题颜色", hex: "颜色值", hexHint: "例如 #6cb6ff", invalidColor: "请输入六位颜色值，例如 #6cb6ff。", scheme: "配色风格", precise: "精细调整颜色", hue: "色相", chroma: "鲜艳度", tone: "明度", reset: "恢复默认外观", done: "完成",
-        schemes: ["柔和", "忠实原色", "黑白", "中性", "鲜明", "活泼", "内容", "彩虹", "果色"]
+        title: "外观", introduction: "选择喜欢的颜色，让商店更合你的心意。", mode: "显示模式", system: "跟随系统", light: "浅色", dark: "深色", color: "主题颜色", chooseColor: "选择主题颜色", hex: "颜色值", hexHint: "例如 #6cb6ff", invalidColor: "请输入六位颜色值，例如 #6cb6ff。", scheme: "配色方案", precise: "精细调整颜色", hue: "色相", chroma: "色度", tone: "色调", reset: "恢复默认外观", done: "完成",
+        schemes: ["调性点缀", "高保真", "单色", "中性", "活力", "表现力", "内容主题", "彩虹", "果缤纷"]
     },
     ja: {
-        title: "外観", introduction: "好きな色で、ストアを自分らしく。", mode: "表示モード", system: "端末の設定に合わせる", light: "ライト", dark: "ダーク", color: "テーマカラー", chooseColor: "テーマカラーを選ぶ", hex: "カラー値", hexHint: "例：#6cb6ff", invalidColor: "#6cb6ff のように6桁のカラー値を入力してください。", scheme: "配色スタイル", precise: "色を細かく調整", hue: "色相", chroma: "鮮やかさ", tone: "明るさ", reset: "外観をリセット", done: "完了",
-        schemes: ["ソフト", "原色に忠実", "モノクロ", "ニュートラル", "鮮やか", "表情豊か", "コンテンツ", "レインボー", "フルーツサラダ"]
+        title: "外観", introduction: "好きな色で、ストアを自分らしく。", mode: "表示モード", system: "端末の設定に合わせる", light: "ライト", dark: "ダーク", color: "テーマカラー", chooseColor: "テーマカラーを選ぶ", hex: "カラー値", hexHint: "例：#6cb6ff", invalidColor: "#6cb6ff のように6桁のカラー値を入力してください。", scheme: "カラースキーム", precise: "色を細かく調整", hue: "色相", chroma: "彩度", tone: "トーン", reset: "外観をリセット", done: "完了",
+        schemes: schemeNames
     }
 } satisfies Record<Locale, { title: string; introduction: string; mode: string; system: string; light: string; dark: string; color: string; chooseColor: string; hex: string; hexHint: string; invalidColor: string; scheme: string; precise: string; hue: string; chroma: string; tone: string; reset: string; done: string; schemes: string[] }>;
 
