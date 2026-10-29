@@ -23,7 +23,6 @@ import "@material/web/tabs/primary-tab.js";
 import "@material/web/ripple/ripple.js";
 import "@material/web/focus/md-focus-ring.js";
 import "@material/web/labs/card/filled-card.js";
-import "@material/web/labs/badge/badge.js";
 import type { MdOutlinedTextField } from "@material/web/textfield/outlined-text-field.js";
 import type { MdOutlinedSelect } from "@material/web/select/outlined-select.js";
 import { FocusState, type MdMenu } from "@material/web/menu/menu.js";
@@ -36,10 +35,6 @@ const buttonTag = (variant: ButtonVariant) => `md-${variant === "tonal" ? "fille
 
 export function Card({ children, ...props }: HTMLAttributes<HTMLElement>) {
     return createElement("md-filled-card", props, children);
-}
-
-export function Badge({ value, label }: { value: string | number; label?: string }) {
-    return createElement("md-badge", { value: String(value), "aria-label": label });
 }
 
 export interface ButtonProps {

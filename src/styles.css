@@ -210,6 +210,7 @@ md-filled-card { min-width: 0; --md-filled-card-container-color: var(--md-sys-co
 .permission-grid p { font-size: 14px; }
 .permission-application { margin-block-start: 20px; }
 .permission-application > summary, .moderation-tools > summary { cursor: pointer; margin-block-end: 20px; }
+.summary-label { display: inline-flex; align-items: center; gap: 8px; vertical-align: middle; }
 .merchant-products { display: block; }
 .editor-panel { scroll-margin-block-start: 24px; }
 .editor-subsection { margin-block-start: 32px; }

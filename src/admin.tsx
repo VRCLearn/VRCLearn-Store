@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { PLATFORM_LABELS, type ProductInput, type Region, type SessionUser, type ShopInput } from "../shared/contracts";
 import { api, send } from "./api";
-import { Card, Badge, Field, Icon, LinkButton, Tabs } from "./material";
+import { Card, Field, Icon, LinkButton, Tabs } from "./material";
 import { ActionButton, Busy, currentUser, Empty, Form, Markdown, Notice, Select, SignInPrompt, statusLabel, useAction, useLocale } from "./ui";
 
 interface ReviewQueue {
@@ -26,7 +26,7 @@ function Decision({ endpoint, region, onDone }: { endpoint: string; region?: Reg
 }
 
 function QueueSection({ title, count, children }: { title: string; count: number; children: ReactNode }) {
-    return <Card className="panel"><div className="section-heading"><h2>{title}</h2><Badge value={count} label={`${title}: ${count}`} /></div>{count ? children : <Empty />}</Card>;
+    return <Card className="panel"><div className="section-heading"><h2>{title} ({count})</h2></div>{count ? children : <Empty />}</Card>;
 }
 
 function RetryPublication({ id, regions, canRetry, onDone }: { id: string; regions: ReviewQueue["products"][number]["regions"]; canRetry: boolean; onDone: () => Promise<void> }) {
@@ -49,7 +49,7 @@ function Moderation({ onDone }: { onDone: () => Promise<void> }) {
     const [reason, setReason] = useState("");
     const [region, setRegion] = useState<Region>("cn");
     const action = useAction();
-    return <Card className="panel"><details className="moderation-tools"><summary><Icon name="shield" /><span>{t.moderation}</span></summary><p className="quiet-note">{t.moderationHint}</p><Form onSubmit={() => action.run(async () => { const target = encodeURIComponent(id.trim()); if (!target || !reason.trim()) throw new Error(t.reason); const endpoint = kind === "unpublish" ? `/admin/products/${target}/unpublish` : kind === "revoke" ? `/admin/shops/${target}/revoke` : `/admin/users/${target}/ban`; await send(endpoint, "POST", { reason, ...(kind === "unpublish" || kind === "revoke" ? { region } : { banned: kind === "ban" }) }); setId(""); setReason(""); action.setMessage(t.success); await onDone(); })}><Select label={t.moderation} value={kind} onChange={setKind} options={[{ value: "unpublish", label: t.unpublish }, { value: "revoke", label: t.revokePermission }, { value: "ban", label: t.ban }, { value: "unban", label: t.unban }]} /><Field label={kind === "unpublish" ? t.productId : kind === "revoke" ? t.shopId : t.userId} value={id} onChange={setId} required maxLength={128} />{(kind === "unpublish" || kind === "revoke") && <Select label={t.selectRegions} value={region} onChange={(value) => setRegion(value as Region)} options={[{ value: "cn", label: t.cn }, { value: "intl", label: t.intl }]} />}<Field label={t.reason} value={reason} onChange={setReason} required multiline maxLength={2000} /><Notice error={action.error} message={action.message} /><ActionButton busy={action.busy} type="submit">{t.confirm}</ActionButton></Form></details></Card>;
+    return <Card className="panel"><details className="moderation-tools"><summary><span className="summary-label"><Icon name="shield" /><span>{t.moderation}</span></span></summary><p className="quiet-note">{t.moderationHint}</p><Form onSubmit={() => action.run(async () => { const target = encodeURIComponent(id.trim()); if (!target || !reason.trim()) throw new Error(t.reason); const endpoint = kind === "unpublish" ? `/admin/products/${target}/unpublish` : kind === "revoke" ? `/admin/shops/${target}/revoke` : `/admin/users/${target}/ban`; await send(endpoint, "POST", { reason, ...(kind === "unpublish" || kind === "revoke" ? { region } : { banned: kind === "ban" }) }); setId(""); setReason(""); action.setMessage(t.success); await onDone(); })}><Select label={t.moderation} value={kind} onChange={setKind} options={[{ value: "unpublish", label: t.unpublish }, { value: "revoke", label: t.revokePermission }, { value: "ban", label: t.ban }, { value: "unban", label: t.unban }]} /><Field label={kind === "unpublish" ? t.productId : kind === "revoke" ? t.shopId : t.userId} value={id} onChange={setId} required maxLength={128} />{(kind === "unpublish" || kind === "revoke") && <Select label={t.selectRegions} value={region} onChange={(value) => setRegion(value as Region)} options={[{ value: "cn", label: t.cn }, { value: "intl", label: t.intl }]} />}<Field label={t.reason} value={reason} onChange={setReason} required multiline maxLength={2000} /><Notice error={action.error} message={action.message} /><ActionButton busy={action.busy} type="submit">{t.confirm}</ActionButton></Form></details></Card>;
 }
 
 export function AdminPage() {

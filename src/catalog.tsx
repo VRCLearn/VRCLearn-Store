@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router";
 import { CATEGORIES, PLATFORMS, PLATFORM_LABELS, type PageResult, type Product, type Shop } from "../shared/contracts";
 import { api, ApiError, localizedError, send } from "./api";
-import { Card, Badge, Button, Field, FilterChip, Icon, IconButton, LinkButton, NavigationChip } from "./material";
+import { Card, Button, Field, FilterChip, Icon, IconButton, LinkButton, NavigationChip } from "./material";
 import { ActionButton, Busy, Empty, Form, Markdown, Notice, Price, ProductCard, Select, SignInPrompt, useAction, useLocale } from "./ui";
 
 declare global {
@@ -89,7 +89,7 @@ export function SearchPage() {
                     <Select label={t.pricing} value={filters.pricing ?? ""} onChange={(value) => field("pricing", value)} options={[{ value: "", label: t.all }, { value: "free", label: t.free }, { value: "paid", label: t.paid }]} />
                     <Select label={t.sort} value={filters.sort ?? "latest"} onChange={(value) => field("sort", value)} options={[{ value: "relevance", label: t.relevance }, { value: "latest", label: t.newest }, { value: "price_asc", label: t.priceAsc }, { value: "price_desc", label: t.priceDesc }]} />
                     <details className="advanced-filters" open={activeFilters > 0 || filters.sort?.startsWith("price") ? true : undefined}>
-                        <summary>{t.moreFilters}{activeFilters ? <Badge value={activeFilters} label={`${t.filters}: ${activeFilters}`} /> : null}<Icon name="expand_more" /></summary>
+                        <summary>{t.moreFilters}{activeFilters ? <span className="filter-count" aria-label={`${t.filters}: ${activeFilters}`}>({activeFilters})</span> : null}<Icon name="expand_more" /></summary>
                         <div className="advanced-filter-fields">
                             <Field label={t.model} value={filters.model ?? ""} onChange={(value) => field("model", value)} maxLength={100} />
                             <Field label={t.tag} value={filters.tag ?? ""} onChange={(value) => field("tag", value)} maxLength={50} />

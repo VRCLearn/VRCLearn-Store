@@ -608,7 +608,7 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
         await expect(page.getByText(user.email, { exact: true })).toBeVisible();
         expect(signIn).toMatchObject({ email: user.email, password: "a-local-browser-test-password" });
         await page.locator("main").getByRole("link", { name: t.admin, exact: true }).click();
-        await expect(page.getByRole("heading", { name: t.productsQueue, exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: `${t.productsQueue} (0)`, exact: true })).toBeVisible();
         expect(authenticationPaths).toEqual(["/api/auth/sign-in/email"]);
     });
 }
