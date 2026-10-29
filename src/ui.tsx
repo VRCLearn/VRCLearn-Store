@@ -72,8 +72,8 @@ export function ProductCard({ product }: { product: Product }) {
     return <Card role="article" className="product-card"><Link className="product-image" to={path(`/products/${encodeURIComponent(product.id)}`)}><InteractionState />{product.images[0] ? <img src={product.images[0]} alt="" loading="lazy" width="640" height="480" /> : <span className="image-placeholder" aria-hidden="true"><Icon name={product.category} size={48} /></span>}<span className="category-pill">{t[product.category]}</span></Link><div className="product-card-body"><Link className="seller-link" to={path(`/shops/${encodeURIComponent(product.shopId)}`)}>{product.shopName}</Link><h3><Link to={path(`/products/${encodeURIComponent(product.id)}`)}>{product.title}</Link></h3>{product.r18 && <p>{t.adult}</p>}<p>{product.summary}</p><div className="product-card-bottom"><Price product={product} /><span className="platforms">{product.platforms.map((platform) => PLATFORM_LABELS[platform]).join(" · ")}</span></div></div></Card>;
 }
 
-export async function currentUser(): Promise<SessionUser | null> {
-    const data = await api<{ user: SessionUser | null }>("/me");
+export async function currentUser(signal?: AbortSignal): Promise<SessionUser | null> {
+    const data = await api<{ user: SessionUser | null }>("/me", { signal });
     return data.user;
 }
 

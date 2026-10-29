@@ -1,9 +1,9 @@
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate } from "react-router";
 import { CATEGORIES, type Category } from "../shared/contracts";
 import { localeFromPath } from "./i18n";
-import { Busy, LocaleContext, useLocale } from "./ui";
+import { Busy, currentUser, LocaleContext, useLocale } from "./ui";
 import { Card, Icon, IconButton, InteractionState, LinkButton, MenuButton } from "./material";
 import { ThemeProvider } from "./theme/provider";
 import { HomeRecommendations } from "./recommendations";
@@ -31,6 +31,32 @@ function Shell() {
     }, [locale]);
     useEffect(() => { window.scrollTo({ top: 0, behavior: "instant" }); }, [location.pathname]);
     return <LocaleContext.Provider value={locale}><ShellContent /></LocaleContext.Provider>;
+}
+
+function AccountMenu() {
+    const { t, path } = useLocale();
+    const navigate = useNavigate();
+    const [canManage, setCanManage] = useState(false);
+    const request = useRef<AbortController | null>(null);
+    useEffect(() => () => request.current?.abort(), []);
+    async function loadAccount() {
+        request.current?.abort();
+        const controller = new AbortController();
+        request.current = controller;
+        setCanManage(false);
+        try {
+            const user = await currentUser(AbortSignal.any([controller.signal, AbortSignal.timeout(10_000)]));
+            if (!controller.signal.aborted) setCanManage(user?.role === "admin" && !user.banned);
+        } catch {
+            if (!controller.signal.aborted) setCanManage(false);
+        }
+    }
+    return <MenuButton label={t.account} icon="person" onOpen={() => { void loadAccount(); }} items={[
+        { value: "/account", label: t.account, icon: "person" },
+        { value: "/favorites", label: t.favorites, icon: "favorite" },
+        { value: "/merchant", label: t.merchant, icon: "storefront" },
+        ...(canManage ? [{ value: "/admin", label: t.admin, icon: "shield" }] : [])
+    ]} onSelect={(next) => navigate(path(next))} />;
 }
 
 function ShellContent() {
@@ -62,11 +88,7 @@ function ShellContent() {
                         { value: "ja", label: "日本語", selected: locale === "ja" }
                     ]} onSelect={(next) => navigate(switchLanguage(next))} />
                     <IconButton variant="tonal" icon="palette" label={t.theme} aria-haspopup="dialog" aria-expanded={appearanceOpen} onClick={() => { setAppearanceLoaded(true); setAppearanceOpen(true); }} />
-                    <MenuButton label={t.account} icon="person" items={[
-                        { value: "/account", label: t.account, icon: "person" },
-                        { value: "/favorites", label: t.favorites, icon: "favorite" },
-                        { value: "/merchant", label: t.merchant, icon: "storefront" }
-                    ]} onSelect={(next) => navigate(path(next))} />
+                    <AccountMenu />
                 </div>
             </div>
             <nav className="mobile-nav" aria-label={t.browse}>{navigation}</nav>

@@ -16,13 +16,14 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
         await expect(header.getByRole("link", { name: t.account, exact: true })).toHaveCount(0);
         await expect(header.getByRole("link", { name: t.favorites, exact: true })).toHaveCount(0);
         await expect(header.getByRole("link", { name: t.merchant, exact: true })).toHaveCount(0);
+        expect(requests).toEqual([]);
         await avatar.click();
         await expect(page).toHaveURL(`/${locale}/privacy`);
         await expect(avatar).toHaveAttribute("aria-expanded", "true");
         await expect(menu).toBeVisible();
         await expect(menu.getByRole("menuitem", { name: t.favorites, exact: true })).toBeVisible();
         await expect(menu.getByRole("menuitem", { name: t.merchant, exact: true })).toBeVisible();
-        expect(requests).toEqual([]);
+        await expect.poll(() => requests).toEqual(["/api/v1/me"]);
         await expect(menu.getByRole("menuitem", { name: t.account, exact: true })).toBeFocused();
         await page.keyboard.press("Escape");
         await expect(menu).not.toBeVisible();
@@ -66,3 +67,70 @@ test("home banners scroll only on demand and link to store categories", async ({
     await banners.getByRole("button", { name: t.back, exact: true }).click();
     await expect.poll(() => track.evaluate((element) => element.scrollLeft)).toBe(0);
 });
+
+for (const locale of ["zh-CN", "en", "ja"] as const) {
+    test(`administrator can open the management workspace from the personal menu in ${locale}`, async ({ page }, testInfo) => {
+        const t = messages(locale);
+        let user: { id: string; email: string; name: string; role: string; banned: boolean } | null = {
+            id: "menu-admin", email: "admin@example.com", name: "Menu admin", role: "admin", banned: false,
+        };
+        let accountRequests = 0;
+        await page.route("**/api/**", (route) => {
+            const path = new URL(route.request().url()).pathname;
+            if (path === "/api/v1/me") {
+                accountRequests++;
+                return route.fulfill({ json: { user } });
+            }
+            if (path === "/api/v1/admin/queue") return route.fulfill({ json: { permissions: [], products: [], shops: [], reports: [] } });
+            return route.fulfill({ status: 404, json: { error: { code: "NOT_FOUND" } } });
+        });
+        await page.goto(`/${locale}/privacy`);
+        expect(accountRequests).toBe(0);
+        const avatar = page.locator("header").getByRole("button", { name: t.account, exact: true });
+        const menu = page.locator("header md-menu").filter({ has: page.getByRole("menuitem", { name: t.account, exact: true }) });
+        await Promise.all([
+            menu.evaluate((element) => new Promise<void>((resolve) => element.addEventListener("opened", () => resolve(), { once: true }))),
+            avatar.press("ArrowDown"),
+        ]);
+        const admin = menu.getByRole("menuitem", { name: t.admin, exact: true });
+        await expect(admin).toBeVisible();
+        await expect(menu.locator("md-menu-item").filter({ hasText: t.admin }).locator('md-icon[slot="start"]')).toBeVisible();
+        await expect(menu.getByRole("menuitem", { name: t.favorites, exact: true })).toBeVisible();
+        await expect(menu.getByRole("menuitem", { name: t.merchant, exact: true })).toBeVisible();
+        expect(accountRequests).toBe(1);
+        await page.screenshot({ path: `output/playwright/personal-menu-admin-${locale}-${testInfo.project.name}.png` });
+        await Promise.all([
+            menu.evaluate((element) => new Promise<void>((resolve) => element.addEventListener("closed", () => resolve(), { once: true }))),
+            admin.click(),
+        ]);
+        await expect(page).toHaveURL(`/${locale}/admin`);
+        await expect(page.getByRole("heading", { name: t.admin, exact: true })).toBeVisible();
+        await expect(page.getByRole("heading", { name: `${t.productsQueue} (0)`, exact: true })).toBeVisible();
+        const beforeReopen = accountRequests;
+        user = null;
+        await avatar.click();
+        await expect.poll(() => accountRequests).toBe(beforeReopen + 1);
+        await expect(admin).toHaveCount(0);
+        await expect(menu.getByRole("menuitem", { name: t.account, exact: true })).toBeVisible();
+    });
+}
+
+for (const status of ["anonymous", "member", "banned", "unavailable"] as const) {
+    test(`personal menu keeps management hidden for ${status} accounts`, async ({ page }) => {
+        const t = messages("en");
+        await page.route("**/api/v1/me", (route) => status === "unavailable"
+            ? route.fulfill({ status: 503, json: { error: { code: "SERVICE_UNAVAILABLE" } } })
+            : route.fulfill({ json: { user: status === "anonymous" ? null : {
+                id: "menu-user", email: "user@example.com", name: "Menu user", role: status === "banned" ? "admin" : "user", banned: status === "banned",
+            } } }));
+        await page.goto("/en/privacy");
+        const response = page.waitForResponse("**/api/v1/me");
+        await page.locator("header").getByRole("button", { name: t.account, exact: true }).click();
+        await response;
+        const menu = page.locator("header md-menu").filter({ has: page.getByRole("menuitem", { name: t.account, exact: true }) });
+        await expect(menu).toBeVisible();
+        await expect(menu.getByRole("menuitem", { name: t.admin, exact: true })).toHaveCount(0);
+        await expect(menu.getByRole("menuitem", { name: t.favorites, exact: true })).toBeVisible();
+        await expect(menu.getByRole("menuitem", { name: t.merchant, exact: true })).toBeVisible();
+    });
+}

@@ -165,11 +165,12 @@ export function MaterialSelect({ label, value, onChange, options, required = fal
 
 export interface MenuOption { value: string; label: string; icon?: string; selected?: boolean }
 
-export function MenuButton({ label, icon, items, onSelect, tonal = true }: {
+export function MenuButton({ label, icon, items, onSelect, onOpen, tonal = true }: {
     label: string;
     icon: string;
     items: MenuOption[];
     onSelect: (value: string) => void;
+    onOpen?: () => void;
     tonal?: boolean;
 }) {
     const generated = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -204,6 +205,7 @@ export function MenuButton({ label, icon, items, onSelect, tonal = true }: {
     function show(last = false) {
         const element = menu.current;
         if (!element) return;
+        if (!element.open) onOpen?.();
         element.defaultFocus = last ? FocusState.LAST_ITEM : FocusState.FIRST_ITEM;
         element.show();
     }
