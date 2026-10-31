@@ -221,8 +221,7 @@ md-filled-card { min-width: 0; --md-filled-card-container-color: var(--md-sys-co
 .upload-previews img { width: 120px; height: 100px; object-fit: cover; border-radius: 16px; margin-block-end: 10px; }
 .file-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
 .file-picker > span { min-width: 0; overflow-wrap: anywhere; }
-.admin-layout { display: grid; grid-template-columns: minmax(0,1fr) 320px; gap: 28px; }
-.admin-layout md-tabs, .review-queues > md-tabs { margin-block-end: 24px; }
+.admin-layout { display: grid; grid-template-columns: minmax(0,1fr) 320px; gap: 28px; margin-block-start: 24px; }
 .review-item { padding: 24px; --md-filled-card-container-color: var(--md-sys-color-surface-container); margin-block-end: 20px; }
 .review-item h3 { margin-block-end: 10px; }
 .review-item small { display: block; margin-block-end: 16px; }

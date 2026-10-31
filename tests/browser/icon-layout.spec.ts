@@ -16,7 +16,7 @@ async function expectSummaryAlignment(summary: Locator) {
 }
 
 for (const locale of ["zh-CN", "en", "ja"] as const) {
-    test(`${locale} disclosure icons align with labels and queue counts stay in the heading`, async ({ page }, testInfo) => {
+    test(`${locale} workspace spacing and disclosure alignment remain consistent`, async ({ page }, testInfo) => {
         const t = messages(locale);
         if (testInfo.project.name === "mobile") await page.setViewportSize({ width: 320, height: 850 });
         await page.route("**/api/**", (route) => {
@@ -32,7 +32,16 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
         await page.goto(`/${locale}/admin`);
         const moderation = page.locator(".moderation-tools > summary");
         await expectSummaryAlignment(moderation);
-        await expect(page.getByRole("heading", { name: `${t.productsQueue} (0)`, exact: true })).toBeVisible();
+        for (const title of [t.productsQueue, t.permissionsQueue, t.shopsQueue, t.reportsQueue]) {
+            await page.locator("main md-primary-tab").filter({ hasText: title }).click();
+            await expect(page.getByRole("heading", { name: `${title} (0)`, exact: true })).toBeVisible();
+            const spacing = await page.locator(".admin-layout").evaluate((element) => {
+                const tabs = document.querySelector("main > md-tabs")!.getBoundingClientRect();
+                const card = element.querySelector(".review-queues > md-filled-card")!.getBoundingClientRect();
+                return card.top - tabs.bottom;
+            });
+            expect(spacing, `${title} content has space below the tabs`).toBeGreaterThanOrEqual(24);
+        }
         await moderation.focus();
         await page.keyboard.press("Enter");
         await expect(page.locator(".moderation-tools")).toHaveAttribute("open", "");
