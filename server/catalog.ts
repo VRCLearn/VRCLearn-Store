@@ -16,7 +16,7 @@ interface PublicRow {
     sort_price?: number;
 }
 
-const publicFrom = `FROM publications p
+export const publicFrom = `FROM publications p
     JOIN products g ON g.id = p.product_id AND g.current_revision_id = p.revision_id
     JOIN product_revisions r ON r.id = p.revision_id AND r.status IN ('pending', 'published')
     JOIN publication_requests approved ON approved.revision_id = p.revision_id AND approved.region = p.region AND approved.status = 'approved'
@@ -25,7 +25,7 @@ const publicFrom = `FROM publications p
     JOIN regional_permissions perm ON perm.shop_id = s.id AND perm.region = p.region AND perm.status = 'approved'
     LEFT JOIN user_profiles owner ON owner.user_id = s.owner_user_id`;
 const publicColumns = `g.id, g.shop_id, p.revision_id, p.media_token, r.content_json, sr.content_json AS shop_json, p.updated_at`;
-const publicWhere = `p.region = ? AND p.active = 1 AND COALESCE(owner.banned, 0) = 0
+export const publicWhere = `p.region = ? AND p.active = 1 AND COALESCE(owner.banned, 0) = 0
     AND (p.region != 'cn' OR COALESCE(json_extract(r.content_json, '$.r18'), 0) = 0)`;
 
 export async function listRecommendations(request: Request, env: AppEnv): Promise<{ items: Product[] }> {

@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 function database() {
     const database = new DatabaseSync(":memory:");
-    database.exec(readFileSync("migrations/0001_initial.sql", "utf8"));
+    for (const migration of readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()) database.exec(readFileSync(`migrations/${migration}`, "utf8"));
     return database;
 }
 
@@ -12,7 +12,8 @@ describe("initial application schema", () => {
     it("initializes a fresh database with authentication, search and bounded storage without retired MFA", () => {
         const sql = database();
         try {
-            expect(readdirSync("migrations").filter((name) => name.endsWith(".sql"))).toEqual(["0001_initial.sql"]);
+            expect(sql.prepare("SELECT COUNT(*) AS n FROM redemption_codes").get()?.n).toBe(0);
+            expect(sql.prepare("PRAGMA index_list(redemption_codes)").all().map((index) => index.name)).toContain("redemption_codes_user_region");
             expect(sql.prepare("PRAGMA table_info(auth_user)").all().map((column) => column.name)).not.toContain("twoFactorEnabled");
             expect(sql.prepare("SELECT name FROM sqlite_master WHERE name IN ('auth_two_factor','auth_mfa_sessions')").all()).toEqual([]);
             expect(sql.prepare("SELECT bytes FROM media_storage_total WHERE id=1").get()?.bytes).toBe(0);

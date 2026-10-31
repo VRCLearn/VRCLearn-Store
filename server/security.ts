@@ -64,12 +64,12 @@ export async function readBytes(request: Request, maximum: number): Promise<Uint
     return result;
 }
 
-export async function jsonBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
+export async function jsonBody<T>(request: Request, schema: z.ZodType<T>, maximum = 49152): Promise<T> {
     if (!request.headers.get("Content-Type")?.startsWith("application/json")) {
         throw new HttpError(415, "JSON_REQUIRED", "Use an application/json request body.");
     }
     try {
-        return schema.parse(JSON.parse(new TextDecoder().decode(await readBytes(request, 49152))));
+        return schema.parse(JSON.parse(new TextDecoder().decode(await readBytes(request, maximum))));
     } catch (error) {
         if (error instanceof HttpError) throw error;
         throw new HttpError(400, "INVALID_INPUT", "The request contains invalid or unsupported values.");
@@ -128,7 +128,7 @@ export async function publicRate(request: Request, env: AppEnv): Promise<void> {
     ]);
 }
 
-export async function turnstile(request: Request, env: AppEnv, token: string, expectedAction: "upload" | "submit"): Promise<void> {
+export async function turnstile(request: Request, env: AppEnv, token: string, expectedAction: "upload" | "submit" | "redeem" | "import-codes" | "comment"): Promise<void> {
     if (!env.TURNSTILE_SECRET_KEY || !token) throw new HttpError(503, "VERIFICATION_REQUIRED", "Human verification is required before this operation.");
     const form = new URLSearchParams({ secret: env.TURNSTILE_SECRET_KEY, response: token });
     const ip = request.headers.get("CF-Connecting-IP");

@@ -1,5 +1,5 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import type { AppEnv } from "../server/env";
 import type { SessionUser } from "../shared/contracts";
 
@@ -69,7 +69,7 @@ export const admin: SessionUser = { id: "admin-one", email: "admin@example.com",
 
 export function testEnvironment() {
     const sql = sqliteD1();
-    sql.database.exec(readFileSync("migrations/0001_initial.sql", "utf8"));
+    for (const migration of readdirSync("migrations").filter((name) => name.endsWith(".sql")).sort()) sql.database.exec(readFileSync(`migrations/${migration}`, "utf8"));
     const state = new Map<string, string>();
     const privateMedia = new Map<string, Uint8Array>();
     const publicMedia = new Map<string, Uint8Array>();

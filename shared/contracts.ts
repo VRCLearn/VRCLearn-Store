@@ -72,3 +72,33 @@ export interface Workspace {
 }
 export const CATEGORIES: Category[] = ["avatars", "clothing", "worlds", "plugins", "tools", "services"];
 export const LOCALES: Locale[] = ["en", "zh-CN", "ja"];
+
+export interface RedemptionInventory {
+    total: number;
+    available: number;
+    redeemed: number;
+}
+
+export interface Redemption {
+    id: string;
+    productId: string;
+    title: string;
+    content: string;
+    redeemedAt: string;
+}
+
+export interface ProductComment {
+    id: string;
+    productId: string;
+    authorName: string;
+    body: string;
+    createdAt: string;
+    updatedAt: string;
+    verifiedRedemption: true;
+}
+
+export interface CommentingInfo {
+    eligible: boolean;
+    comment: ProductComment | null;
+    hidden: boolean;
+}

@@ -5,6 +5,8 @@ import { getProduct, getShop, listProducts, listRecommendations } from "./catalo
 import { deleteMediaKeys, deletePublicMedia, imageInfo, ownedMedia, publishMedia, releaseMediaStorage, reserveMediaStorage } from "./media";
 import { failure, HttpError, jsonBody, readBytes, regionOf, reserve, secureOrigin, session, turnstile } from "./security";
 import { decisionSchema, productSchema, regionSchema, searchTokens, shopSchema, submitSchema } from "./validation";
+import { codeInventory, importCodes, listRedemptions, redeemCode } from "./redemptions";
+import { commentingInfo, createComment, deleteComment, editComment, listComments, moderateComment, reportComment } from "./comments";
 
 interface ShopRow { id: string; owner_user_id: string; current_revision_id: string | null }
 interface RevisionRow { id: string; product_id: string; content_json: string; status: MerchantProduct["status"]; review_reason: string; updated_at: string; submission_token: string | null }
@@ -16,6 +18,13 @@ const regionReasonBody = z.object({ region: regionSchema, reason: z.string().tri
 const apiRoutes: { path: RegExp; methods: readonly string[] }[] = [
     { path: /^(?:config|recommendations|me|products|favorites|merchant\/workspace|admin\/queue)$/, methods: ["GET"] },
     { path: /^products\/[^/]+$/, methods: ["GET"] },
+    { path: /^products\/[^/]+\/redeem$/, methods: ["POST"] },
+    { path: /^products\/[^/]+\/comments$/, methods: ["GET", "POST"] },
+    { path: /^products\/[^/]+\/commenting$/, methods: ["GET"] },
+    { path: /^comments\/[^/]+$/, methods: ["PUT", "DELETE"] },
+    { path: /^comments\/[^/]+\/report$/, methods: ["POST"] },
+    { path: /^redemptions$/, methods: ["GET"] },
+    { path: /^merchant\/products\/[^/]+\/codes$/, methods: ["GET", "POST"] },
     { path: /^shops\/[^/]+(?:\/products)?$/, methods: ["GET"] },
     { path: /^merchant\/media\/[^/]+$/, methods: ["GET"] },
     { path: /^favorites\/[^/]+$/, methods: ["PUT", "DELETE"] },
@@ -28,6 +37,7 @@ const apiRoutes: { path: RegExp; methods: readonly string[] }[] = [
     { path: /^admin\/shops\/[^/]+\/revoke$/, methods: ["POST"] },
     { path: /^admin\/users\/[^/]+\/ban$/, methods: ["POST"] },
     { path: /^admin\/reports\/[^/]+\/resolve$/, methods: ["POST"] },
+    { path: /^admin\/comments\/[^/]+\/moderate$/, methods: ["POST"] },
 ];
 
 function response(data: unknown, status = 200): Response {
@@ -126,8 +136,12 @@ async function queue(env: AppEnv): Promise<unknown> {
         productItems.push({ id: row.id, productId: row.product_id, shopName: row.shop_name, content: JSON.parse(row.content_json) as ProductInput, regions: regions.results.map(({ region, status, reason }) => ({ region, status, reason })), canRetry });
     }
     const shops = await env.DB.prepare("SELECT id, shop_id, content_json, status FROM shop_revisions WHERE status = 'pending' ORDER BY created_at LIMIT 100").all<{ id: string; shop_id: string; content_json: string; status: string }>();
-    const reports = await env.DB.prepare("SELECT id, product_id, reason, status FROM reports WHERE status = 'pending' ORDER BY created_at LIMIT 100").all<{ id: string; product_id: string; reason: string; status: string }>();
-    return { permissions: permissions.results.map((row) => ({ id: row.id, shopId: row.shop_id, shopName: row.shopName, region: row.region, status: row.status, reason: row.reason })), products: productItems, shops: shops.results.map((row) => ({ id: row.id, shopId: row.shop_id, content: JSON.parse(row.content_json) as ShopInput, status: row.status })), reports: reports.results.map((row) => ({ id: row.id, productId: row.product_id, reason: row.reason, status: row.status })) };
+    const reports = await env.DB.prepare(`SELECT id, product_id, reason, status, created_at, NULL AS comment_id, NULL AS comment_body, NULL AS comment_author_name, NULL AS comment_hidden, NULL AS comment_deleted
+        FROM reports WHERE status = 'pending' UNION ALL
+        SELECT report.id, comment.product_id, report.reason, report.status, report.created_at, comment.id, comment.body, comment.author_name, comment.hidden, comment.deleted
+        FROM comment_reports report JOIN product_comments comment ON comment.id = report.comment_id WHERE report.status = 'pending'
+        ORDER BY created_at LIMIT 100`).all<{ id: string; product_id: string; reason: string; status: string; comment_id: string | null; comment_body: string | null; comment_author_name: string | null; comment_hidden: number | null; comment_deleted: number | null }>();
+    return { permissions: permissions.results.map((row) => ({ id: row.id, shopId: row.shop_id, shopName: row.shopName, region: row.region, status: row.status, reason: row.reason })), products: productItems, shops: shops.results.map((row) => ({ id: row.id, shopId: row.shop_id, content: JSON.parse(row.content_json) as ShopInput, status: row.status })), reports: reports.results.map((row) => ({ id: row.id, productId: row.product_id, reason: row.reason, status: row.status, ...(row.comment_id ? { commentId: row.comment_id, commentBody: row.comment_body, commentAuthorName: row.comment_author_name, commentHidden: Boolean(row.comment_hidden), commentDeleted: Boolean(row.comment_deleted) } : {}) })) };
 }
 
 async function finalize(env: AppEnv, revisionId: string): Promise<boolean> {
@@ -220,6 +234,7 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
         if (request.method === "GET" && parts[0] === "products") {
             if (parts.length === 1) return response(await listProducts(request, env));
             if (parts.length === 2) return response(await getProduct(request, env, idSchema.parse(parts[1])));
+            if (parts.length === 3 && parts[2] === "comments") return response(await listComments(request, env, idSchema.parse(parts[1])));
         }
         if (request.method === "GET" && parts[0] === "shops" && parts.length >= 2) {
             const id = idSchema.parse(parts[1]);
@@ -228,6 +243,20 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
         }
         const user = await session(request, env, parts[0] === "admin");
         if (writing) await rate(env, user, parts.slice(0, 2).join(":"));
+        if (path === "redemptions") return response(await listRedemptions(request, env, user));
+        if (parts[0] === "products" && parts[2] === "commenting") return response(await commentingInfo(request, env, user, idSchema.parse(parts[1])));
+        if (parts[0] === "products" && parts[2] === "comments") return response(await createComment(request, env, user, idSchema.parse(parts[1])), 201);
+        if (parts[0] === "comments") {
+            const id = idSchema.parse(parts[1]);
+            if (parts[2] === "report") return response(await reportComment(request, env, user, id), 201);
+            return response(request.method === "PUT" ? await editComment(request, env, user, id) : await deleteComment(request, env, user, id));
+        }
+        if (parts[0] === "admin" && parts[1] === "comments") return response(await moderateComment(request, env, user, idSchema.parse(parts[2])));
+        if (parts[0] === "products" && parts[2] === "redeem") return response(await redeemCode(request, env, user, idSchema.parse(parts[1])));
+        if (parts[0] === "merchant" && parts[1] === "products" && parts[3] === "codes") {
+            const id = idSchema.parse(parts[2]);
+            return response(request.method === "GET" ? await codeInventory(env, user, id) : await importCodes(request, env, user, id), request.method === "GET" ? 200 : 201);
+        }
         if (parts[0] === "favorites") {
             const region = regionOf(request);
             if (parts.length === 1 && request.method === "GET") {
@@ -480,7 +509,20 @@ export async function handleApi(request: Request, env: AppEnv, _ctx: Pick<Execut
                 }
                 if (parts[1] === "reports" && parts[3] === "resolve") {
                     const body = await jsonBody(request, z.object({ reason: z.string().trim().min(1).max(2000) }).strict());
-                    const result = await env.DB.batch([env.DB.prepare("UPDATE reports SET status = 'resolved', resolution = ? WHERE id = ? AND status = 'pending'").bind(body.reason, id), audit(env, user, "report.resolve", id, body.reason)]);
+                    const targets = await env.DB.prepare(`SELECT 'product' AS kind FROM reports WHERE id = ? AND status = 'pending'
+                        UNION ALL SELECT 'comment' AS kind FROM comment_reports WHERE id = ? AND status = 'pending' LIMIT 2`).bind(id, id).all<{ kind: "product" | "comment" }>();
+                    if (targets.results.length !== 1) throw new HttpError(409, "REPORT_UNAVAILABLE", "This report is unavailable or its identity is ambiguous.");
+                    const update = targets.results[0].kind === "comment"
+                        ? env.DB.prepare("UPDATE comment_reports SET status = 'resolved', resolution = ? WHERE id = ? AND status = 'pending'")
+                        : env.DB.prepare("UPDATE reports SET status = 'resolved', resolution = ? WHERE id = ? AND status = 'pending'");
+                    const result = await env.DB.batch([
+                        update.bind(body.reason, id),
+                        // changes() is the immediately preceding conditional UPDATE
+                        // on this transaction's connection; a losing resolver cannot audit.
+                        env.DB.prepare(`INSERT INTO audit_log (id, actor_id, action, target_id, region, reason, created_at)
+                            SELECT ?, ?, 'report.resolve', ?, NULL, ?, ? WHERE changes() = 1`)
+                            .bind(crypto.randomUUID(), user.id, id, body.reason, now()),
+                    ]);
                     if (!result[0].meta.changes) throw new HttpError(409, "REVIEW_CONFLICT", "This report has already been handled.");
                     return response({ ok: true });
                 }
