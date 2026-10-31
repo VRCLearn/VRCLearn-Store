@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./fixtures";
 
 test("home recommendations load once and retain static content on failure with explicit retry", async ({ page }) => {
     let calls = 0;

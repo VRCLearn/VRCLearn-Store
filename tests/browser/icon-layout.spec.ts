@@ -1,4 +1,5 @@
-import { test, expect, type Locator } from "@playwright/test";
+import { test, expect } from "./fixtures";
+import { type Locator } from "@playwright/test";
 import { messages } from "../../src/i18n";
 
 async function expectSummaryAlignment(summary: Locator) {

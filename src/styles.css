@@ -1,10 +1,11 @@
 @import "./theme/default.css";
+@import "./fonts.css";
 
 /* Material Web owns controls; this file provides page layout and content surfaces. */
 :root {
     color-scheme: light dark;
-    font-family: "Noto Sans", "Noto Sans SC", "Noto Sans JP", "Segoe UI", system-ui, sans-serif;
-    --md-ref-typeface-brand: "Noto Sans", "Noto Sans SC", "Noto Sans JP", "Segoe UI", system-ui, sans-serif;
+    font-family: var(--md-ref-typeface-plain);
+    --md-ref-typeface-brand: "VRCLearn Noto Sans", "VRCLearn Noto Sans SC", "VRCLearn Noto Sans JP", sans-serif;
     --md-ref-typeface-plain: var(--md-ref-typeface-brand);
     --store-page-width: 1280px;
     font-synthesis: none;
@@ -12,8 +13,7 @@
     -webkit-font-smoothing: antialiased;
 }
 :root[lang="ja"] {
-    font-family: "Noto Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
-    --md-ref-typeface-brand: "Noto Sans", "Noto Sans JP", "Yu Gothic UI", system-ui, sans-serif;
+    --md-ref-typeface-brand: "VRCLearn Noto Sans", "VRCLearn Noto Sans JP", "VRCLearn Noto Sans SC", sans-serif;
 }
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--md-sys-color-surface); color: var(--md-sys-color-on-surface); font-size: 15px; line-height: 1.65; }

@@ -44,6 +44,8 @@ npm run test:capacity
 
 `app/` 是主 Worker 入口；`server/` 保存共享业务服务，API 与详情 HTML 直接调用这些服务。`worker/` 提供内部认证、业务配额和有界清理。静态界面由 Material Web 组件组成，主题与滚动条集中管理。
 
+字体由 Google Fonts CDN 提供，Noto Sans、Noto Sans SC 和 Noto Sans JP 的 400–700 可变字重声明固定在 `src/fonts.css`。页面与 Material Web 共用字体令牌，日文优先使用 JP 字形。站点专用字体族名隔离本机同名 Noto 字体；`font-display: optional` 在字体未赶上首次排版时保持回退字体，不晚到后切换。缓存命中后可在后续页面使用 Noto；不等待字体显示页面，不使用 JavaScript 强制换字体。更新方式见 [字体说明](docs/fonts.md)。
+
 `deployment/environments.json` 是云端资源身份的权威清单。未配置或未开通的环境拒绝发布；测试资源以 `test-` 开头。测试从新建空库和空媒体桶开始，不复制旧账户、会话、媒体或配额状态。
 
 Cloudflare Workers Builds 从 `test` 分支执行校验、测试、一次构建、安全迁移、辅助 Worker 和主 Worker 发布、版本读回及冒烟。无需部署用 GitHub Actions；业务运行时不持有部署凭据。详情见 [架构](docs/architecture.md)、[运维说明](docs/operations.md) 和 [费用与容量](docs/costs.md)。

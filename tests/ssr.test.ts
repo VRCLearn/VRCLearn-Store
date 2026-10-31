@@ -36,6 +36,11 @@ describe("region-scoped HTML and sitemap", () => {
         expect(html).toContain("window.__STORE_DATA__=");
         expect(response.headers.get("Cache-Control")).toBe("private, no-store");
         expect(response.headers.get("Content-Security-Policy")).toContain("nonce-");
+        const policy = response.headers.get("Content-Security-Policy") ?? "";
+        expect(policy).toContain("style-src 'self' 'unsafe-inline';");
+        expect(policy).toContain("font-src 'self' https://fonts.gstatic.com;");
+        expect(html).not.toContain("fonts.googleapis.com");
+
     });
     it.each(["production", "test"])("uses only %s media in the dynamic HTML image policy", async (environment) => {
         const prefix = environment === "test" ? "test-" : "";

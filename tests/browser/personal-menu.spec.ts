@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { messages } from "../../src/i18n";
 
 for (const locale of ["zh-CN", "en", "ja"] as const) {
@@ -13,11 +13,17 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
         const header = page.locator("header");
         const avatar = header.getByRole("button", { name: t.account, exact: true });
         const menu = header.locator("md-menu").filter({ has: page.getByRole("menuitem", { name: t.account, exact: true }) });
+        async function openMenu(action: () => Promise<void>) {
+            await Promise.all([
+                menu.evaluate((element) => new Promise<void>((resolve) => element.addEventListener("opened", () => resolve(), { once: true }))),
+                action(),
+            ]);
+        }
         await expect(header.getByRole("link", { name: t.account, exact: true })).toHaveCount(0);
         await expect(header.getByRole("link", { name: t.favorites, exact: true })).toHaveCount(0);
         await expect(header.getByRole("link", { name: t.merchant, exact: true })).toHaveCount(0);
         expect(requests).toEqual([]);
-        await avatar.click();
+        await openMenu(() => avatar.click());
         await expect(page).toHaveURL(`/${locale}/privacy`);
         await expect(avatar).toHaveAttribute("aria-expanded", "true");
         await expect(menu).toBeVisible();
@@ -29,7 +35,7 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
         await expect(menu).not.toBeVisible();
         await expect(avatar).toHaveAttribute("aria-expanded", "false");
 
-        await avatar.press("ArrowDown");
+        await openMenu(() => avatar.press("ArrowDown"));
         await expect(menu).toBeVisible();
         await expect(menu.getByRole("menuitem", { name: t.account, exact: true })).toBeFocused();
         await page.keyboard.press("Enter");
@@ -38,7 +44,7 @@ for (const locale of ["zh-CN", "en", "ja"] as const) {
         await expect(avatar).toHaveAttribute("aria-expanded", "false");
 
         for (const [label, route] of [[t.favorites, "favorites"], [t.merchant, "merchant"]]) {
-            await avatar.click();
+            await openMenu(() => avatar.click());
             await menu.getByRole("menuitem", { name: label, exact: true }).click();
             await expect(page).toHaveURL(`/${locale}/${route}`);
             await expect(menu).not.toBeVisible();

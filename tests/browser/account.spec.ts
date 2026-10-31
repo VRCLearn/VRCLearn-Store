@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 import { messages } from "../../src/i18n";
 
 for (const locale of ["zh-CN", "en", "ja"] as const) {
