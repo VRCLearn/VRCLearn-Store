@@ -175,7 +175,6 @@ md-filled-card { min-width: 0; --md-filled-card-container-color: var(--md-sys-co
 .detail-price { display: flex; flex-direction: column; gap: 6px; margin-block: 28px; }
 .detail-price > span:first-child { font-size: 13px; color: var(--md-sys-color-on-surface-variant); }
 .detail-price .price { font-size: 30px; }
-.purchase-link { width: 100%; }
 .destination { display: block; margin-block: 12px 20px; font-size: 13px; }
 .spec-list { margin-block: 28px 0; }
 .spec-list > div { display: grid; grid-template-columns: 110px minmax(0,1fr); gap: 16px; padding-block: 12px; font-size: 14px; }
@@ -324,3 +323,12 @@ md-filled-card { min-width: 0; --md-filled-card-container-color: var(--md-sys-co
 @media (prefers-reduced-motion:reduce) {
     html { scroll-behavior: auto; }
 }
+
+.redemption-receipt { padding: 20px; min-width: 0; }
+.redemption-receipt h3 { overflow-wrap: anywhere; }
+
+.product-comments { margin-block-start: 40px; }
+.comment-item, .comment-editor { padding: 24px; min-width: 0; }
+.comment-editor { margin-block: 24px; }
+.comment-item h3 { margin: 0; overflow-wrap: anywhere; }
+.comment-body { white-space: pre-wrap; overflow-wrap: anywhere; }

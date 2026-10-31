@@ -38,7 +38,9 @@ describe("region-scoped HTML and sitemap", () => {
         expect(response.headers.get("Content-Security-Policy")).toContain("nonce-");
         const policy = response.headers.get("Content-Security-Policy") ?? "";
         expect(policy).toContain("style-src 'self' 'unsafe-inline';");
-        expect(policy).toContain("font-src 'self' https://fonts.gstatic.com;");
+        expect(policy).toContain("font-src 'self';");
+        expect(html).toContain('rel="preload"');
+        expect(html).toContain('as="font" type="font/woff2" crossorigin');
         expect(html).not.toContain("fonts.googleapis.com");
 
     });

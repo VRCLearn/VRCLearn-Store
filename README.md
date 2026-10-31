@@ -1,6 +1,6 @@
 # VRCLearn Store
 
-面向 VRChat 创作者与用户的商品展示、搜索和导购平台。使用 React、TypeScript、Material Web、Cloudflare Workers Static Assets、D1、R2、KV 和 Durable Objects。购买在外部商家网站完成，平台不处理支付或聊天。
+面向 VRChat 创作者与用户的商品展示、搜索和导购平台。使用 React、TypeScript、Material Web、Cloudflare Workers Static Assets、D1、R2、KV 和 Durable Objects。兑换码在外部商家网站购买，用户在商店内兑换每张卡密对应的私密文本或链接；平台不处理支付或聊天。
 
 项目只允许内部测试环境发布，生产环境未开通。源代码和环境清单保留 `test` 与 `main` 的结构；合并到 `main` 不会创建或发布生产资源。线上状态须通过实际部署和验收记录确认，不能由配置文件推断。
 
@@ -32,6 +32,10 @@ npm run test:capacity
 
 ## 产品与权限
 
+商品页提供“兑换”与“购买兑换码”：前者要求登录并输入卡密，后者跳转商家设置、随商品审核的 HTTPS 网页。商家在商品编辑页的“兑换码管理”中导入 JSON，每张卡密对应独立交付内容；用户可在账户的“我的兑换”中重新查看。格式、限制和访问规则见 [卡密兑换](docs/redemptions.md)。
+
+成功兑换的用户可发表商品评论，标记为“已兑换”，并可修改或删除自己的评论。评论按地区隔离、按需分页加载，支持举报及管理员隐藏／恢复；规则见 [商品评论](docs/comments.md)。
+
 - 三语界面：简体中文、英文、日文；商品保留商家原文，界面语言不改变商品区域。
 - 邮箱与密码注册、登录；只设置昵称，不设置 username。不发送邮箱验证或找回密码邮件，不验证邮箱所有权，不提供 MFA。已登录用户可修改密码和撤销会话。
 - 商家自行入驻，每账户一个店铺；地区发布权限、商品发布、修订及公开店铺资料均须审核。
@@ -44,7 +48,7 @@ npm run test:capacity
 
 `app/` 是主 Worker 入口；`server/` 保存共享业务服务，API 与详情 HTML 直接调用这些服务。`worker/` 提供内部认证、业务配额和有界清理。静态界面由 Material Web 组件组成，主题与滚动条集中管理。
 
-字体由 Google Fonts CDN 提供，Noto Sans、Noto Sans SC 和 Noto Sans JP 的 400–700 可变字重声明固定在 `src/fonts.css`。页面与 Material Web 共用字体令牌，日文优先使用 JP 字形。站点专用字体族名隔离本机同名 Noto 字体；`font-display: optional` 在字体未赶上首次排版时保持回退字体，不晚到后切换。缓存命中后可在后续页面使用 Noto；不等待字体显示页面，不使用 JavaScript 强制换字体。更新方式见 [字体说明](docs/fonts.md)。
+字体使用锁定版本的 Fontsource Noto Sans、Noto Sans SC 和 Noto Sans JP 可变字重包，由 Vite 输出为带哈希的同域静态资产。页面与 Material Web 共用现有 Noto 字体栈，日文仍优先使用 JP 字形。仅预加载 Noto Sans 常用拉丁分片，其他字形按需加载；构建与开发共用 `font-display: optional`、400–700 字重和独立字体族名策略，避免晚到换字和本机同名字体干扰。无外部字体请求；许可随 `/font-licenses.txt` 分发。详见 [字体说明](docs/fonts.md)。
 
 `deployment/environments.json` 是云端资源身份的权威清单。未配置或未开通的环境拒绝发布；测试资源以 `test-` 开头。测试从新建空库和空媒体桶开始，不复制旧账户、会话、媒体或配额状态。
 

@@ -7,6 +7,7 @@ interface TurnstileApi {
     render(container: HTMLElement, options: {
         sitekey: string;
         action: string;
+        size: "normal" | "compact";
         callback: (token: string) => void;
         "expired-callback": () => void;
         "error-callback": (code: string) => boolean;
@@ -48,7 +49,7 @@ function loadScript() {
     return scriptPromise;
 }
 
-export function Verification({ onToken, t, action = "auth" }: { onToken: (token: string) => void; t: Record<MessageKey, string>; action?: string }) {
+export function Verification({ onToken, t, action = "auth", size = "normal" }: { onToken: (token: string) => void; t: Record<MessageKey, string>; action?: string; size?: "normal" | "compact" }) {
     const container = useRef<HTMLDivElement>(null);
     const callback = useRef(onToken);
     const [failure, setFailure] = useState<"load" | "challenge" | "expired" | "timeout">();
@@ -98,6 +99,7 @@ export function Verification({ onToken, t, action = "auth" }: { onToken: (token:
                 widget = widgetApi.render(container.current, {
                     sitekey: config.turnstileSiteKey,
                     action,
+                    size,
                     callback: (token) => {
                         if (cancelled || !active) return;
                         if (!token) { fail("challenge"); return; }
@@ -123,7 +125,7 @@ export function Verification({ onToken, t, action = "auth" }: { onToken: (token:
         }
         void start();
         return () => { cancelled = true; active = false; clearWatchdog(); window.clearTimeout(configTimeout); controller.abort(); callback.current(""); removeWidget(); };
-    }, [t, action, attempt]);
+    }, [t, action, size, attempt]);
     const error = failure === "load" ? t.turnstileMissing : failure === "challenge" ? t.turnstileFailed : failure === "expired" ? t.turnstileExpired : failure === "timeout" ? t.turnstileTimeout : "";
     return <div className="verification"><div ref={container} />{waiting && <div className="busy"><Spinner label={t.turnstilePending} /><span>{t.turnstilePending}</span></div>}{error && <><p role="alert" className="error-text">{error}</p><Button variant="outlined" icon="refresh" onClick={() => { setFailure(undefined); setWaiting(true); setAttempt((current) => current + 1); }}>{t.retryVerification}</Button></>}</div>;
 }

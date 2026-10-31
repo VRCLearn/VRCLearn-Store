@@ -23,6 +23,9 @@ import "@material/web/tabs/primary-tab.js";
 import "@material/web/ripple/ripple.js";
 import "@material/web/focus/md-focus-ring.js";
 import "@material/web/labs/card/filled-card.js";
+import "@material/web/dialog/dialog.js";
+import type { MdDialog } from "@material/web/dialog/dialog.js";
+import type { MdFilledButton } from "@material/web/button/filled-button.js";
 import type { MdOutlinedTextField } from "@material/web/textfield/outlined-text-field.js";
 import type { MdOutlinedSelect } from "@material/web/select/outlined-select.js";
 import { FocusState, type MdMenu } from "@material/web/menu/menu.js";
@@ -35,6 +38,34 @@ const buttonTag = (variant: ButtonVariant) => `md-${variant === "tonal" ? "fille
 
 export function Card({ children, ...props }: HTMLAttributes<HTMLElement>) {
     return createElement("md-filled-card", props, children);
+}
+
+export function Dialog({ headline, closeLabel, busy = false, children, onClose }: {
+    headline: string;
+    closeLabel: string;
+    busy?: boolean;
+    children: ReactNode;
+    onClose: () => void;
+}) {
+    const dialog = useRef<MdDialog | null>(null);
+    const current = useRef({ busy, onClose });
+    current.current = { busy, onClose };
+    useEffect(() => {
+        const element = dialog.current!;
+        const closed = () => current.current.onClose();
+        const cancel = (event: Event) => { if (current.current.busy) event.preventDefault(); };
+        element.addEventListener("closed", closed);
+        element.addEventListener("cancel", cancel);
+        void element.show();
+        return () => {
+            element.removeEventListener("closed", closed);
+            element.removeEventListener("cancel", cancel);
+        };
+    }, []);
+    return createElement("md-dialog", { ref: dialog, "aria-label": headline },
+        <span slot="headline">{headline}</span>,
+        <div slot="content">{children}</div>,
+        <div slot="actions"><Button variant="text" disabled={busy} onClick={() => { void dialog.current?.close(); }}>{closeLabel}</Button></div>);
 }
 
 export interface ButtonProps {
@@ -63,7 +94,18 @@ export function LinkButton({ href, children, variant = "filled", icon, target, r
     className?: string;
     "aria-label"?: string;
 }) {
-    return createElement(buttonTag(variant), { href, target, rel, className, hasIcon: Boolean(icon), "aria-label": label }, icon && <Icon name={icon} slot="icon" />, children);
+    const button = useRef<MdFilledButton | null>(null);
+    useEffect(() => {
+        const element = button.current!;
+        let active = true;
+        // Material Web exposes href/target but not rel. Apply it to the native
+        // anchor after the component renders; the host attribute has no effect.
+        void element.updateComplete.then(() => {
+            if (active) element.shadowRoot?.querySelector("a")?.setAttribute("rel", rel ?? "");
+        });
+        return () => { active = false; };
+    }, [href, rel, variant]);
+    return createElement(buttonTag(variant), { ref: button, href, target, className, hasIcon: Boolean(icon), "aria-label": label }, icon && <Icon name={icon} slot="icon" />, children);
 }
 
 export interface IconButtonProps {
@@ -93,13 +135,14 @@ export function IconButton({ icon, children, label, variant = "standard", ...res
     } }, children ?? (icon && <Icon name={icon} />));
 }
 
-export function Field({ label, value, onChange, type = "text", required = false, disabled = false, multiline = false, maxLength, minLength, autoComplete, supportingText, name, leadingIcon, trailingIcon, placeholder, error, errorText, className, showCounter = false }: {
+export function Field({ label, value, onChange, type = "text", required = false, disabled = false, readOnly = false, multiline = false, maxLength, minLength, autoComplete, supportingText, name, leadingIcon, trailingIcon, placeholder, error, errorText, className, showCounter = false }: {
     label: string;
     value: string;
     onChange: (value: string) => void;
     type?: string;
     required?: boolean;
     disabled?: boolean;
+    readOnly?: boolean;
     multiline?: boolean;
     maxLength?: number;
     minLength?: number;
@@ -119,7 +162,7 @@ export function Field({ label, value, onChange, type = "text", required = false,
         if (field.current && field.current.value !== value) field.current.value = value;
     }, [value]);
     return createElement("md-outlined-text-field", {
-        ref: field, label, value, type: multiline ? "textarea" : type, required, disabled, rows: multiline ? 5 : undefined,
+        ref: field, label, value, type: multiline ? "textarea" : type, required, disabled, readOnly, rows: multiline ? 5 : undefined,
         // maxLength also enables Material's counter. Use the public value property
         // to keep the input bounded without showing a counter on every short field.
         maxLength: showCounter ? maxLength : -1, minLength, autoComplete, name,

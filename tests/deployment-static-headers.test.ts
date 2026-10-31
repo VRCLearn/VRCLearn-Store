@@ -39,10 +39,10 @@ async function cloudFixture() {
 }
 
 describe("static media content policy isolation", () => {
-    it("allows Google font files without granting stylesheet, script or connection access", () => {
+    it("keeps fonts self-hosted without granting external stylesheet, script or connection access", () => {
         const headers = buildStaticHeaders(template, "https://test-store-media.vrclearn.com");
         expect(/\bstyle-src\s+([^;]+)/.exec(headers)?.[1].trim().split(/\s+/)).toEqual(["'self'", "'unsafe-inline'"]);
-        expect(/\bfont-src\s+([^;]+)/.exec(headers)?.[1].trim().split(/\s+/)).toEqual(["'self'", "https://fonts.gstatic.com"]);
+        expect(/\bfont-src\s+([^;]+)/.exec(headers)?.[1].trim().split(/\s+/)).toEqual(["'self'"]);
         for (const directive of ["script-src", "connect-src"]) expect(new RegExp(`\\b${directive}\\s+([^;]+)`).exec(headers)?.[1]).not.toMatch(/fonts\.(googleapis|gstatic)\.com/);
     });
 

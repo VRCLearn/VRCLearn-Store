@@ -26,6 +26,8 @@ export function localizedError(error: unknown, t: Record<MessageKey, string>): s
         REGION_PERMISSION_REQUIRED: "permissionRequired", SHOP_REVIEW_REQUIRED: "shopApprovalRequired",
         ALL_REGIONS_REQUIRED: "allRegionsRequired", WITHDRAW_REQUIRED: "pendingImmutable", REVISION_REQUIRED: "saveBeforeSubmit",
         ADULT_CN_FORBIDDEN: "adultRegionHint",
+        CODE_UNAVAILABLE: "codeUnavailable", CODE_IMPORT_CONFLICT: "codeImportConflict",
+        COMMENT_NOT_FOUND: "commentUnavailable", COMMENT_UNAVAILABLE: "commentUnavailable", COMMENT_REPORT_UNAVAILABLE: "commentUnavailable",
         VERIFICATION_REQUIRED: "turnstileWait", VERIFICATION_FAILED: "verificationExpired", CHALLENGE_FAILED: "verificationExpired",
         AUTH_UNAVAILABLE: "noApi", SERVICE_UNAVAILABLE: "noApi", NETWORK_UNAVAILABLE: "networkUnavailable",
     };
@@ -55,6 +57,6 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     return data as T;
 }
 
-export function send<T>(path: string, method: string, body?: unknown): Promise<T> {
-    return api<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+export function send<T>(path: string, method: string, body?: unknown, signal?: AbortSignal): Promise<T> {
+    return api<T>(path, { method, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal });
 }

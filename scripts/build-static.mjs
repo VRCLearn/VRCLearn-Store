@@ -6,15 +6,15 @@ import { buildStaticHeaders, staticBuildContext } from "./static-headers.mjs";
 export const uiRoutes = JSON.parse(await readFile(new URL("../shared/routes.json", import.meta.url), "utf8"));
 const copy = {
     en: {
-        title: "Find your next expression.", intro: "Discover VRChat avatars, clothing, worlds, plugins, tools and services from independent creators.", browse: "Browse products", notice: "Purchases take place on the seller’s website. VRCLearn Store does not process payments or provide chat.",
+        title: "Find your next expression.", intro: "Discover VRChat avatars, clothing, worlds, plugins, tools and services from independent creators.", browse: "Browse products", notice: "Buy redemption codes on the seller’s website, then redeem them in VRCLearn Store. The store does not process payments or provide chat.",
         pages: { search: "Browse products", favorites: "Favorites", account: "Account", merchant: "Merchant workspace", admin: "Admin workspace", privacy: "Privacy", terms: "Terms", security: "Security", maintenance: "Service status" }, notFound: "Page not found", returnHome: "Return to storefront",
     },
     "zh-CN": {
-        title: "找到下一种表达。", intro: "探索独立创作者的 VRChat 模型、服饰、场景、插件、工具与服务。", browse: "浏览商品", notice: "商品在商家网站购买，VRCLearn 商店不处理支付，也不提供聊天。",
+        title: "找到下一种表达。", intro: "探索独立创作者的 VRChat 模型、服饰、场景、插件、工具与服务。", browse: "浏览商品", notice: "在商家网站购买兑换码后，回到 VRCLearn 商店兑换商品。商店不处理支付，也不提供聊天。",
         pages: { search: "浏览商品", favorites: "收藏", account: "账户", merchant: "商家工作台", admin: "管理工作台", privacy: "隐私", terms: "使用条款", security: "安全", maintenance: "服务状态" }, notFound: "页面不存在", returnHome: "返回商店",
     },
     ja: {
-        title: "次の表現を見つけよう。", intro: "クリエイターの VRChat アバター、衣装、ワールド、プラグイン、ツールとサービスを探そう。", browse: "商品を見る", notice: "購入は出品者のサイトで行います。VRCLearn Store は決済やチャットを提供しません。",
+        title: "次の表現を見つけよう。", intro: "クリエイターの VRChat アバター、衣装、ワールド、プラグイン、ツールとサービスを探そう。", browse: "商品を見る", notice: "販売者のサイトでコードを購入し、VRCLearn Store で商品を引き換えてください。決済やチャットは提供しません。",
         pages: { search: "商品を見る", favorites: "お気に入り", account: "アカウント", merchant: "出品者ワークスペース", admin: "管理ワークスペース", privacy: "プライバシー", terms: "利用規約", security: "セキュリティ", maintenance: "サービス状況" }, notFound: "ページが見つかりません", returnHome: "ストアに戻る",
     },
 };

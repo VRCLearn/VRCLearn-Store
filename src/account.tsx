@@ -4,6 +4,7 @@ import type { SessionUser } from "../shared/contracts";
 import { Card, Field, Tabs, LinkButton, Icon } from "./material";
 import { ApiError } from "./api";
 import { Verification } from "./turnstile";
+import { RedemptionHistory } from "./redemptions";
 import { ActionButton, Busy, currentUser, Form, Notice, useAction, useLocale } from "./ui";
 
 const auth = createAuthClient();
@@ -62,6 +63,7 @@ export function AccountPage() {
                 <LinkButton variant="tonal" icon="storefront" href={path("/merchant")}>{t.merchant}</LinkButton>
                 {user.role === "admin" && <LinkButton variant="tonal" icon="shield" href={path("/admin")}>{t.admin}</LinkButton>}
             </div>
+            <RedemptionHistory />
             <details className="account-session-actions"><summary>{t.changePassword}</summary>
                 <Form onSubmit={changePassword}>
                     <Field label={t.currentPassword} type="password" value={currentPassword} onChange={setCurrentPassword} required minLength={12} maxLength={128} autoComplete="current-password" />

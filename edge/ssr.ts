@@ -19,7 +19,7 @@ function outward(response: Response, head = false): Response {
 }
 
 function csp(nonce: string, mediaOrigin: string): string {
-    return `default-src 'self'; script-src 'self' 'nonce-${nonce}' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: ${mediaOrigin}; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`;
+    return `default-src 'self'; script-src 'self' 'nonce-${nonce}' https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: ${mediaOrigin}; connect-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`;
 }
 
 async function cacheKey(request: Request, env: AppEnv): Promise<Request> {
@@ -35,7 +35,7 @@ async function cacheKey(request: Request, env: AppEnv): Promise<Request> {
 function staticDetail(data: Product | Shop, kind: "product" | "shop", locale: Locale): string {
     if (kind === "product") {
         const product = data as Product;
-        return `<article><p><a href="/${locale}/shops/${encodeURIComponent(product.shopId)}">${escapeHtml(product.shopName)}</a></p><h1>${escapeHtml(product.title)}</h1>${product.r18 ? "<p>Adult</p>" : ""}<p>${escapeHtml(product.summary)}</p><div>${product.images.map((image) => `<img src="${escapeHtml(image)}" alt="${escapeHtml(product.title)}" loading="lazy" width="640" height="640">`).join("")}</div><section>${safeMarkdown(product.description)}</section><p>${product.pricing === "free" ? "Free / 免费 / 無料" : `${escapeHtml(product.currency ?? "")} ${product.price ?? ""}`}</p><a href="${escapeHtml(product.purchaseUrl)}" rel="nofollow noopener noreferrer" target="_blank">Visit seller / 前往购买 / 購入先へ</a></article>`;
+        return `<article><p><a href="/${locale}/shops/${encodeURIComponent(product.shopId)}">${escapeHtml(product.shopName)}</a></p><h1>${escapeHtml(product.title)}</h1>${product.r18 ? "<p>Adult</p>" : ""}<p>${escapeHtml(product.summary)}</p><div>${product.images.map((image) => `<img src="${escapeHtml(image)}" alt="${escapeHtml(product.title)}" loading="lazy" width="640" height="640">`).join("")}</div><section>${safeMarkdown(product.description)}</section><p>${product.pricing === "free" ? "Free / 免费 / 無料" : `${escapeHtml(product.currency ?? "")} ${product.price ?? ""}`}</p><a href="${escapeHtml(product.purchaseUrl)}" rel="nofollow noopener noreferrer" target="_blank">Buy redemption code / 购买兑换码 / 引き換えコードを購入</a></article>`;
     }
     const shop = data as Shop;
     return `<article><h1>${escapeHtml(shop.name)}</h1><section>${safeMarkdown(shop.description)}</section><p><a href="${escapeHtml(shop.websiteUrl)}" target="_blank" rel="nofollow noopener noreferrer">${escapeHtml(shop.websiteUrl)}</a></p><a href="/${locale}/search">Browse products / 浏览商品 / 商品を見る</a></article>`;

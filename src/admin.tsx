@@ -8,7 +8,7 @@ interface ReviewQueue {
     permissions: { id: string; shopId: string; shopName: string; region: Region; reason: string }[];
     products: { id: string; productId: string; shopName: string; content: ProductInput; regions: { region: Region; status: string; reason: string }[]; canRetry: boolean }[];
     shops: { id: string; shopId: string; content: ShopInput }[];
-    reports: { id: string; productId: string; reason: string; status: string }[];
+    reports: { id: string; productId: string; reason: string; status: string; commentId?: string; commentBody?: string; commentAuthorName?: string; commentHidden?: boolean; commentDeleted?: boolean }[];
 }
 
 function Decision({ endpoint, region, onDone }: { endpoint: string; region?: Region; onDone: () => Promise<void> }) {
@@ -49,7 +49,7 @@ function Moderation({ onDone }: { onDone: () => Promise<void> }) {
     const [reason, setReason] = useState("");
     const [region, setRegion] = useState<Region>("cn");
     const action = useAction();
-    return <Card className="panel"><details className="moderation-tools"><summary><span className="summary-label"><Icon name="shield" /><span>{t.moderation}</span></span></summary><p className="quiet-note">{t.moderationHint}</p><Form onSubmit={() => action.run(async () => { const target = encodeURIComponent(id.trim()); if (!target || !reason.trim()) throw new Error(t.reason); const endpoint = kind === "unpublish" ? `/admin/products/${target}/unpublish` : kind === "revoke" ? `/admin/shops/${target}/revoke` : `/admin/users/${target}/ban`; await send(endpoint, "POST", { reason, ...(kind === "unpublish" || kind === "revoke" ? { region } : { banned: kind === "ban" }) }); setId(""); setReason(""); action.setMessage(t.success); await onDone(); })}><Select label={t.moderation} value={kind} onChange={setKind} options={[{ value: "unpublish", label: t.unpublish }, { value: "revoke", label: t.revokePermission }, { value: "ban", label: t.ban }, { value: "unban", label: t.unban }]} /><Field label={kind === "unpublish" ? t.productId : kind === "revoke" ? t.shopId : t.userId} value={id} onChange={setId} required maxLength={128} />{(kind === "unpublish" || kind === "revoke") && <Select label={t.selectRegions} value={region} onChange={(value) => setRegion(value as Region)} options={[{ value: "cn", label: t.cn }, { value: "intl", label: t.intl }]} />}<Field label={t.reason} value={reason} onChange={setReason} required multiline maxLength={2000} /><Notice error={action.error} message={action.message} /><ActionButton busy={action.busy} type="submit">{t.confirm}</ActionButton></Form></details></Card>;
+    return <Card className="panel"><details className="moderation-tools"><summary><span className="summary-label"><Icon name="shield" /><span>{t.moderation}</span></span></summary><p className="quiet-note">{t.moderationHint}</p><Form onSubmit={() => action.run(async () => { const target = encodeURIComponent(id.trim()); if (!target || !reason.trim()) throw new Error(t.reason); const commentAction = kind === "hideComment" || kind === "restoreComment"; const endpoint = commentAction ? `/admin/comments/${target}/moderate` : kind === "unpublish" ? `/admin/products/${target}/unpublish` : kind === "revoke" ? `/admin/shops/${target}/revoke` : `/admin/users/${target}/ban`; await send(endpoint, "POST", { reason, ...(commentAction ? { hidden: kind === "hideComment" } : kind === "unpublish" || kind === "revoke" ? { region } : { banned: kind === "ban" }) }); setId(""); setReason(""); action.setMessage(t.success); await onDone(); })}><Select label={t.moderation} value={kind} onChange={setKind} options={[{ value: "unpublish", label: t.unpublish }, { value: "revoke", label: t.revokePermission }, { value: "ban", label: t.ban }, { value: "unban", label: t.unban }, { value: "hideComment", label: t.hideComment }, { value: "restoreComment", label: t.restoreComment }]} /><Field label={kind === "unpublish" ? t.productId : kind === "revoke" ? t.shopId : kind === "hideComment" || kind === "restoreComment" ? t.commentId : t.userId} value={id} onChange={setId} required maxLength={128} />{(kind === "unpublish" || kind === "revoke") && <Select label={t.selectRegions} value={region} onChange={(value) => setRegion(value as Region)} options={[{ value: "cn", label: t.cn }, { value: "intl", label: t.intl }]} />}<Field label={t.reason} value={reason} onChange={setReason} required multiline maxLength={2000} /><Notice error={action.error} message={action.message} /><ActionButton busy={action.busy} type="submit">{t.confirm}</ActionButton></Form></details></Card>;
 }
 
 export function AdminPage() {
@@ -79,5 +79,22 @@ function ReportItem({ report, onDone }: { report: ReviewQueue["reports"][number]
     const { t, path } = useLocale();
     const [reason, setReason] = useState("");
     const action = useAction();
-    return <Card role="article" className="review-item"><h3>{t.productId}: {report.productId}</h3><LinkButton href={path(`/products/${encodeURIComponent(report.productId)}`)} target="_blank" variant="text" icon="open_in_new">{t.details}</LinkButton><p>{report.reason}</p><Form onSubmit={() => action.run(async () => { await send(`/admin/reports/${encodeURIComponent(report.id)}/resolve`, "POST", { reason }); await onDone(); })}><Field label={t.reason} value={reason} onChange={setReason} required maxLength={2000} /><Notice error={action.error} /><ActionButton busy={action.busy} type="submit">{t.resolve}</ActionButton></Form></Card>;
+    return <Card role="article" className="review-item">
+        <h3>{t.productId}: {report.productId}</h3>
+        <LinkButton href={path(`/products/${encodeURIComponent(report.productId)}${report.commentId ? "#comments" : ""}`)} target="_blank" variant="text" icon="open_in_new">{t.details}</LinkButton>
+        {report.commentId && <><p>{t.commentId}: {report.commentId}</p><p>{report.commentAuthorName}</p><p className="comment-body">{report.commentDeleted ? t.commentDeleted : report.commentBody}</p></>}
+        <p>{report.reason}</p>
+        <Form onSubmit={() => action.run(async () => { await send(`/admin/reports/${encodeURIComponent(report.id)}/resolve`, "POST", { reason }); await onDone(); })}>
+            <Field label={t.reason} value={reason} onChange={setReason} required maxLength={2000} />
+            <Notice error={action.error} message={action.message} />
+            <div className="button-row">
+                {report.commentId && <ActionButton busy={action.busy} variant="outlined" disabled={report.commentDeleted} onClick={() => { void action.run(async () => {
+                    if (!reason.trim()) throw new Error(t.reason);
+                    await send(`/admin/comments/${encodeURIComponent(report.commentId!)}/moderate`, "POST", { hidden: !report.commentHidden, reason });
+                    await onDone();
+                }); }}>{report.commentHidden ? t.restoreComment : t.hideComment}</ActionButton>}
+                <ActionButton busy={action.busy} type="submit">{t.resolve}</ActionButton>
+            </div>
+        </Form>
+    </Card>;
 }

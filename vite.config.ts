@@ -5,6 +5,12 @@ import { cloudflare } from "@cloudflare/vite-plugin";
 // @ts-expect-error build tooling intentionally uses native JavaScript modules
 import { staticPageHtml, uiRoutes } from "./scripts/build-static.mjs";
 
+const notoFamilies = new Map([
+    ["Noto Sans Variable", "VRCLearn Noto Sans"],
+    ["Noto Sans SC Variable", "VRCLearn Noto Sans SC"],
+    ["Noto Sans JP Variable", "VRCLearn Noto Sans JP"],
+]);
+
 function staticInterfaces(): Plugin {
     return {
         name: "store-static-interfaces",
@@ -42,8 +48,35 @@ export default defineConfig({
             inspectorPort: false,
         }),
     ],
+    css: {
+        postcss: {
+            plugins: [{
+                postcssPlugin: "store-noto-font-policy",
+                AtRule: {
+                    "font-face"(rule) {
+                        let noto = false;
+                        rule.walkDecls("font-family", (declaration) => {
+                            const alias = notoFamilies.get(declaration.value.replace(/['"]/g, ""));
+                            if (!alias) return;
+                            declaration.value = `"${alias}"`;
+                            noto = true;
+                        });
+                        if (!noto) return;
+                        // Preserve the provider's subsets and files. Site-local
+                        // names isolate installed Noto; optional prevents a late swap.
+                        rule.walkDecls("font-display", (declaration) => { declaration.value = "optional"; });
+                        rule.walkDecls("font-weight", (declaration) => { declaration.value = "400 700"; });
+                    },
+                },
+            }],
+        },
+    },
     appType: "mpa",
-    build: { target: "es2022", manifest: true },
+    build: {
+        target: "es2022", manifest: true,
+        // Even tiny font subsets remain same-origin cacheable files under CSP.
+        assetsInlineLimit: (filePath) => /\.woff2$/i.test(filePath) ? false : undefined,
+    },
     server: { host: "127.0.0.1", port: 4173, strictPort: true },
     preview: { host: "127.0.0.1", port: 4173, strictPort: true },
 });
